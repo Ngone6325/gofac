@@ -291,6 +291,23 @@ func NewArrayUserService(services []*UserService) *ArrayUserService {
 	return &ArrayUserService{Services: services}
 }
 
+type ArrayUserService2 struct {
+	Services *ArrayUserService
+}
+
+func NewArrayUserService2(services *ArrayUserService) *ArrayUserService2 {
+	return &ArrayUserService2{Services: services}
+}
+
+type MapUserService struct {
+	ServiceMap map[string]*UserService
+}
+
+func NewMapUserService(serviceMap map[string]*UserService) *MapUserService {
+	return &MapUserService{ServiceMap: serviceMap}
+}
+
+// 示例9：命名注册 + 嵌套依赖注入
 func ExampleMoreComplexReferenceTypes() {
 	container := di.NewContainer()
 
@@ -311,6 +328,24 @@ func ExampleMoreComplexReferenceTypes() {
 	for i, service := range services {
 		fmt.Printf("Service %d - Allowed Roles: %v\n", i+1, service.AllowedRoles)
 	}
+
+	// 手动创建 ArrayUserService 并注册
+	//arrayUserService := NewArrayUserService(services)
+	container.MustRegister(NewArrayUserService, di.Singleton)
+
+	// 注册 ArrayUserService2（会自动注入 *ArrayUserService 依赖）
+	container.MustRegister(NewArrayUserService2, di.Singleton)
+
+	// 解析嵌套结构
+	var arrayUserService2 *ArrayUserService2
+	container.MustResolve(&arrayUserService2)
+	fmt.Printf("\nNested structure - First service roles: %v\n", arrayUserService2.Services.Services[0].AllowedRoles)
+	fmt.Printf("Nested structure - Total services in array: %d\n", len(arrayUserService2.Services.Services))
+
+	container.MustRegister(NewMapUserService, di.Singleton)
+	var mapUserService *MapUserService
+	container.MustResolve(&mapUserService)
+	fmt.Printf("\nMap structure - Total services in map: %d\n", len(mapUserService.ServiceMap))
 }
 
 // ==================== 示例10：多数据库连接（实际项目场景）====================

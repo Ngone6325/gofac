@@ -438,11 +438,96 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 	// 递归解析所有依赖参数
 	params := make([]reflect.Value, len(paramTypes))
 	for i, pType := range paramTypes {
-		pInstance, err := c.resolve(pType, track)
-		if err != nil {
-			return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+		// 检查参数是否为切片类型
+		if pType.Kind() == reflect.Slice {
+			// 首先尝试直接解析切片类型（如果已注册）
+			c.mu.RLock()
+			_, sliceExists := c.services[pType]
+			c.mu.RUnlock()
+
+			if sliceExists {
+				// 切片类型已注册，直接解析
+				pInstance, err := c.resolve(pType, track)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				}
+				params[i] = pInstance
+			} else {
+				// 切片类型未注册：自动收集所有该元素类型的实例
+				elemType := pType.Elem()
+
+				// 创建结果切片
+				results := reflect.MakeSlice(pType, 0, 0)
+
+				// 添加默认服务（如果存在）
+				c.mu.RLock()
+				if _, exists := c.services[elemType]; exists {
+					c.mu.RUnlock()
+					// 递归解析默认实例
+					inst, err := c.resolve(elemType, track)
+					if err == nil {
+						results = reflect.Append(results, inst)
+					}
+				} else {
+					c.mu.RUnlock()
+				}
+
+				// 添加所有命名服务
+				c.mu.RLock()
+				for _, namedMap := range c.namedServices {
+					if namedServiceDef, exists := namedMap[elemType]; exists {
+						if namedServiceDef.isInstance {
+							results = reflect.Append(results, namedServiceDef.instance)
+						}
+					}
+				}
+				c.mu.RUnlock()
+
+				params[i] = results
+			}
+		} else if pType.Kind() == reflect.Map && pType.Key().Kind() == reflect.String {
+			// 检查参数是否为 map[string]T 类型
+			// 首先尝试直接解析 map 类型（如果已注册）
+			c.mu.RLock()
+			_, mapExists := c.services[pType]
+			c.mu.RUnlock()
+
+			if mapExists {
+				// map 类型已注册，直接解析
+				pInstance, err := c.resolve(pType, track)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				}
+				params[i] = pInstance
+			} else {
+				// map 类型未注册：自动收集所有命名注册的实例
+				valueType := pType.Elem()
+
+				// 创建结果 map
+				results := reflect.MakeMap(pType)
+
+				// 收集所有命名服务
+				c.mu.RLock()
+				for name, namedMap := range c.namedServices {
+					if namedServiceDef, exists := namedMap[valueType]; exists {
+						if namedServiceDef.isInstance {
+							keyVal := reflect.ValueOf(name)
+							results.SetMapIndex(keyVal, namedServiceDef.instance)
+						}
+					}
+				}
+				c.mu.RUnlock()
+
+				params[i] = results
+			}
+		} else {
+			// 非切片/map类型：正常解析
+			pInstance, err := c.resolve(pType, track)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+			}
+			params[i] = pInstance
 		}
-		params[i] = pInstance
 	}
 
 	// 调用构造函数创建实例
@@ -563,12 +648,96 @@ createInstance:
 
 	params := make([]reflect.Value, len(paramTypes))
 	for i, pType := range paramTypes {
-		// 依赖解析：Scoped作用域内的依赖，优先通过作用域解析
-		pInstance, err := s.resolve(pType, track)
-		if err != nil {
-			return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+		// 检查参数是否为切片类型
+		if pType.Kind() == reflect.Slice {
+			// 首先尝试直接解析切片类型（如果已注册）
+			s.root.mu.RLock()
+			_, sliceExists := s.root.services[pType]
+			s.root.mu.RUnlock()
+
+			if sliceExists {
+				// 切片类型已注册，直接解析
+				pInstance, err := s.resolve(pType, track)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				}
+				params[i] = pInstance
+			} else {
+				// 切片类型未注册：自动收集所有该元素类型的实例
+				elemType := pType.Elem()
+
+				// 创建结果切片
+				results := reflect.MakeSlice(pType, 0, 0)
+
+				// 添加默认服务（如果存在）
+				s.root.mu.RLock()
+				if _, exists := s.root.services[elemType]; exists {
+					s.root.mu.RUnlock()
+					// 递归解析默认实例
+					inst, err := s.resolve(elemType, track)
+					if err == nil {
+						results = reflect.Append(results, inst)
+					}
+				} else {
+					s.root.mu.RUnlock()
+				}
+
+				// 添加所有命名服务
+				s.root.mu.RLock()
+				for _, namedMap := range s.root.namedServices {
+					if namedServiceDef, exists := namedMap[elemType]; exists {
+						if namedServiceDef.isInstance {
+							results = reflect.Append(results, namedServiceDef.instance)
+						}
+					}
+				}
+				s.root.mu.RUnlock()
+
+				params[i] = results
+			}
+		} else if pType.Kind() == reflect.Map && pType.Key().Kind() == reflect.String {
+			// 检查参数是否为 map[string]T 类型
+			// 首先尝试直接解析 map 类型（如果已注册）
+			s.root.mu.RLock()
+			_, mapExists := s.root.services[pType]
+			s.root.mu.RUnlock()
+
+			if mapExists {
+				// map 类型已注册，直接解析
+				pInstance, err := s.resolve(pType, track)
+				if err != nil {
+					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				}
+				params[i] = pInstance
+			} else {
+				// map 类型未注册：自动收集所有命名注册的实例
+				valueType := pType.Elem()
+
+				// 创建结果 map
+				results := reflect.MakeMap(pType)
+
+				// 收集所有命名服务
+				s.root.mu.RLock()
+				for name, namedMap := range s.root.namedServices {
+					if namedServiceDef, exists := namedMap[valueType]; exists {
+						if namedServiceDef.isInstance {
+							keyVal := reflect.ValueOf(name)
+							results.SetMapIndex(keyVal, namedServiceDef.instance)
+						}
+					}
+				}
+				s.root.mu.RUnlock()
+
+				params[i] = results
+			}
+		} else {
+			// 非切片/map类型：正常解析
+			pInstance, err := s.resolve(pType, track)
+			if err != nil {
+				return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+			}
+			params[i] = pInstance
 		}
-		params[i] = pInstance
 	}
 
 	results := serviceDef.ctor.Call(params)

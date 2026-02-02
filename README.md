@@ -11,7 +11,9 @@ Gofac 是一个受 [Autofac](https://autofac.org/) 启发的 Go 语言依赖注�
 - 🔧 **构造函数注册**：自动解析依赖参数
 - 📦 **实例注册**：直接注册已创建的对象
 - 🎯 **接口和具体类型注册**：支持接口类型和具体类型注册
-- 🏷️ **命名注册**：支持同一类型的多个实例注册 ⭐ 新功能
+- 🏷️ **命名注册**：支持同一类型的多个实例注册
+- 🔄 **切片自动注入**：自动收集同类型实例并注入 ⭐ 新功能
+- 🗺️ **Map 自动注入**：自动收集命名实例并创建 Map ⭐ 新功能
 - 🔍 **泛型支持**：类型安全的 `Get[T]()` 和 `MustGet[T]()` 方法
 - 🌐 **引用类型支持**：完整支持切片、映射、数组
 - 🔒 **线程安全**：所有操作并发安全
@@ -189,7 +191,66 @@ fmt.Printf("Total databases: %d\n", len(allDBs)) // 输出: 2
 
 > 详细说明请参考 [NAMED_REGISTRATION.md](NAMED_REGISTRATION.md)
 
-### 引用类型支持 ⭐ 新功能
+#### 5. 切片自动注入 ⭐ 新功能
+
+当构造函数需要切片类型参数时，容器会智能处理：
+- 如果切片类型已注册，直接使用
+- 如果未注册，自动收集所有该元素类型的实例
+
+```go
+type DatabaseManager struct {
+    Databases []*Database
+}
+
+func NewDatabaseManager(dbs []*Database) *DatabaseManager {
+    return &DatabaseManager{Databases: dbs}
+}
+
+// 注册多个数据库实例
+container.MustRegisterInstanceNamed("primary", &Database{Host: "primary"}, di.Singleton)
+container.MustRegisterInstanceNamed("replica", &Database{Host: "replica"}, di.Singleton)
+
+// 注册 DatabaseManager - 自动注入所有 *Database 实例
+container.MustRegister(NewDatabaseManager, di.Singleton)
+
+var manager *DatabaseManager
+container.MustResolve(&manager)
+fmt.Printf("Total databases: %d\n", len(manager.Databases)) // 输出: 2
+```
+
+> 详细说明请参考 [SLICE_AUTO_INJECTION.md](SLICE_AUTO_INJECTION.md)
+
+#### 6. Map 自动注入 ⭐ 新功能
+
+当构造函数需要 `map[string]T` 类型参数时，容器会智能处理：
+- 如果 Map 类型已注册，直接使用
+- 如果未注册，自动收集所有该值类型的命名注册实例，以名称为键创建 Map
+
+```go
+type CacheManager struct {
+    Caches map[string]ICache
+}
+
+func NewCacheManager(caches map[string]ICache) *CacheManager {
+    return &CacheManager{Caches: caches}
+}
+
+// 注册多个缓存实现
+container.MustRegisterInstanceAsNamed("redis", &RedisCache{}, (*ICache)(nil), di.Singleton)
+container.MustRegisterInstanceAsNamed("memory", &MemoryCache{}, (*ICache)(nil), di.Singleton)
+
+// 注册 CacheManager - 自动注入所有命名缓存实例
+container.MustRegister(NewCacheManager, di.Singleton)
+
+var manager *CacheManager
+container.MustResolve(&manager)
+fmt.Println(manager.Caches["redis"].Get("key")) // 通过名称访问
+fmt.Printf("Total caches: %d\n", len(manager.Caches)) // 输出: 2
+```
+
+> 详细说明请参考 [MAP_AUTO_INJECTION.md](MAP_AUTO_INJECTION.md)
+
+### 引用类型支持
 
 #### 切片（Slice）
 

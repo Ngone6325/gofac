@@ -1,31 +1,22 @@
 package di
 
 import (
-	"errors"
 	"fmt"
 	"reflect"
 	"sync"
 )
 
-// 新增：Scoped生命周期枚举（与原有Transient/Singleton平级）
-type LifetimeScope int
-
-const (
-	Transient LifetimeScope = iota // 瞬时：每次获取新建实例
-	Singleton                      // 单例：全局唯一，根容器缓存
-	Scoped                         // 作用域：作用域内唯一，不同作用域隔离
-)
-
 // ServiceDef 服务定义：存储注册元信息、缓存参数类型和单例实例
 type ServiceDef struct {
-	implType   reflect.Type   // 服务实现类型（构造函数返回值）
+	implType   reflect.Type   // 服务实现类型（构造函数返回值或实例类型）
 	scope      LifetimeScope  // 生命周期
-	instance   reflect.Value  // 单例实例缓存
-	ctor       reflect.Value  // 构造函数反射值
-	ctorType   reflect.Type   // 构造函数反射类型
+	instance   reflect.Value  // 单例实例缓存或预注册实例
+	ctor       reflect.Value  // 构造函数反射值（实例注册时为空）
+	ctorType   reflect.Type   // 构造函数反射类型（实例注册时为空）
 	once       sync.Once      // 单例实例初始化原子操作
 	paramTypes []reflect.Type // 缓存构造函数参数类型（核心优化）
 	paramOnce  sync.Once      // 保证参数类型仅解析一次（并发安全）
+	isInstance bool           // 是否为实例注册（true时直接使用instance，不调用ctor）
 }
 
 // Container DI容器核心：管理所有服务，保证并发安全
@@ -34,11 +25,10 @@ type Container struct {
 	mu       sync.RWMutex
 }
 
-// 新增：Scope作用域容器（与Container平级，轻量封装）
-// 同一个Scope内Scoped实例唯一，不同Scope相互隔离
+// Scope 同一个Scope内Scoped实例唯一，不同Scope相互隔离
 type Scope struct {
 	root       *Container                     // 关联根容器（共享注册元信息）
-	scopedInst map[reflect.Type]reflect.Value // 本作用域Scoped实例缓存
+	scopedInst map[reflect.Type]reflect.Value // 本作用域 Scoped 实例缓存
 	mu         sync.RWMutex                   // 作用域并发安全锁
 }
 
@@ -49,23 +39,8 @@ func NewContainer() *Container {
 	}
 }
 
-// 全局容器：供单服务架构直接使用，省去手动创建容器
+// Global 全局容器：供单服务架构直接使用，省去手动创建容器
 var Global = NewContainer()
-
-// 框架核心错误定义（新增Scoped相关错误，原有错误保留）
-var (
-	ErrNotFunc                   = errors.New("注册的必须是构造函数（函数类型）")
-	ErrNoReturn                  = errors.New("构造函数必须有且仅有一个返回值")
-	ErrRegisterDuplicate         = errors.New("该服务类型已注册，禁止重复注册")
-	ErrServiceNotRegistered      = errors.New("服务未注册，无法解析")
-	ErrCreateInstanceFailed      = errors.New("创建服务实例失败")
-	ErrNotConcreteType           = errors.New("构造函数返回值必须是具体类型（非接口）")
-	ErrResolveCircularDependency = errors.New("解析时发现循环依赖")
-	ErrInvalidInterfaceType      = errors.New("interfaceType必须是接口的空指针，如(*IInterface)(nil)")
-	ErrInvalidOutPtr             = errors.New("out必须是非空的指针类型")
-	ErrTypeConvertFailed         = errors.New("实例无法转换为目标类型")
-	ErrScopedOnRootContainer     = errors.New("Scoped生命周期服务不能直接通过根容器获取，请通过作用域Scope调用") // 新增Scoped错误
-)
 
 // Register 基础注册：按构造函数返回值类型注册，返回错误（需手动处理）
 func (c *Container) Register(ctor any, scope LifetimeScope) error {
@@ -127,10 +102,73 @@ func (c *Container) register(ctor any, interfaceType any, scope LifetimeScope) e
 
 	// 封装服务定义并加入容器
 	c.services[svcType] = &ServiceDef{
-		implType: implType,
-		scope:    scope,
-		ctor:     ctorVal,
-		ctorType: ctorType,
+		implType:   implType,
+		scope:      scope,
+		ctor:       ctorVal,
+		ctorType:   ctorType,
+		isInstance: false,
+	}
+	return nil
+}
+
+// RegisterInstance 实例注册：直接注册已创建的实例，按实例类型注册
+// 注意：不支持Transient生命周期（实例已创建，无法每次返回新实例）
+func (c *Container) RegisterInstance(instance any, scope LifetimeScope) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.registerInstance(instance, nil, scope)
+}
+
+// RegisterInstanceAs 实例接口注册：将已创建的实例注册为指定接口类型
+// 注意：不支持Transient生命周期（实例已创建，无法每次返回新实例）
+func (c *Container) RegisterInstanceAs(instance any, interfaceType any, scope LifetimeScope) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.registerInstance(instance, interfaceType, scope)
+}
+
+// registerInstance 内部实例注册逻辑
+func (c *Container) registerInstance(instance any, interfaceType any, scope LifetimeScope) error {
+	// Transient不支持实例注册（无法每次创建新实例）
+	if scope == Transient {
+		return ErrTransientInstance
+	}
+
+	// 校验实例不为 nil
+	if instance == nil {
+		return ErrNilInstance
+	}
+
+	instVal := reflect.ValueOf(instance)
+	implType := instVal.Type()
+
+	// 确定最终注册的服务类型（接口/实现类型）
+	svcType := implType
+	if interfaceType != nil {
+		// 解析接口类型
+		ifaceType := reflect.TypeOf(interfaceType)
+		if ifaceType.Kind() != reflect.Ptr || ifaceType.Elem().Kind() != reflect.Interface {
+			return ErrInvalidInterfaceType
+		}
+		svcType = ifaceType.Elem()
+
+		// 校验实现类型是否实现接口
+		if !implType.Implements(svcType) {
+			return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+		}
+	}
+
+	// 检查重复注册
+	if _, exists := c.services[svcType]; exists {
+		return fmt.Errorf("%w，类型：%s", ErrRegisterDuplicate, svcType)
+	}
+
+	// 封装服务定义并加入容器
+	c.services[svcType] = &ServiceDef{
+		implType:   implType,
+		scope:      scope,
+		instance:   instVal,
+		isInstance: true,
 	}
 	return nil
 }
@@ -170,6 +208,11 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 	// 新增：Scoped禁止根容器直接解析，强制使用作用域
 	if serviceDef.scope == Scoped {
 		return reflect.Value{}, ErrScopedOnRootContainer
+	}
+
+	// 实例注册：直接返回预注册的实例（Singleton/Scoped）
+	if serviceDef.isInstance {
+		return serviceDef.instance, nil
 	}
 
 	// 单例：已有实例直接返回
@@ -215,7 +258,7 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 	return instance, nil
 }
 
-// 新增：Container创建作用域方法（根容器专属，创建Scoped作用域）
+// NewScope 新增：Container创建作用域方法（根容器专属，创建Scoped作用域）
 func (c *Container) NewScope() *Scope {
 	return &Scope{
 		root:       c,
@@ -223,7 +266,7 @@ func (c *Container) NewScope() *Scope {
 	}
 }
 
-// 新增：Scope的Resolve方法（与Container的Resolve格式一致，支持Scoped）
+// Resolve 新增：Scope的Resolve方法（与Container的Resolve格式一致，支持Scoped）
 func (s *Scope) Resolve(out any) error {
 	outVal := reflect.ValueOf(out)
 	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
@@ -254,6 +297,28 @@ func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (refl
 	}
 	track[svcType] = true
 	defer delete(track, svcType)
+
+	// 实例注册处理
+	if serviceDef.isInstance {
+		// Singleton实例：直接返回根容器的实例
+		if serviceDef.scope == Singleton {
+			return serviceDef.instance, nil
+		}
+		// Scoped实例：每个作用域独立缓存
+		if serviceDef.scope == Scoped {
+			s.mu.RLock()
+			inst, exists := s.scopedInst[svcType]
+			s.mu.RUnlock()
+			if exists && inst.IsValid() {
+				return inst, nil
+			}
+			// 首次访问：缓存实例到作用域
+			s.mu.Lock()
+			s.scopedInst[svcType] = serviceDef.instance
+			s.mu.Unlock()
+			return serviceDef.instance, nil
+		}
+	}
 
 	// 1. 单例：修复循环依赖 → 优先从根容器取缓存，未初始化则用作用域自身resolve解析（复用track）
 	if serviceDef.scope == Singleton {
@@ -340,7 +405,7 @@ func getTyped[T any](_ *Container, svcType reflect.Type, instance reflect.Value)
 			return instance.Interface().(T), nil
 		}
 		// 情况2：值类型实现接口，但容器返回的是值 → 尝试取地址
-		if it.Kind() != reflect.Ptr && reflect.PtrTo(it).Implements(svcType) {
+		if it.Kind() != reflect.Ptr && reflect.PointerTo(it).Implements(svcType) {
 			var iface any
 			if instance.CanAddr() {
 				iface = instance.Addr().Interface()
@@ -367,7 +432,7 @@ func getTyped[T any](_ *Container, svcType reflect.Type, instance reflect.Value)
 	return zero, fmt.Errorf("【%w】实例%s无法转换为目标类型%s", ErrTypeConvertFailed, it, svcType)
 }
 
-// ---------------------- 便捷Must系列方法（出错Panic，90%场景首选） ----------------------
+// MustRegister ---------------------- 便捷Must系列方法（出错Panic，90%场景首选） ----------------------
 // MustRegister 便捷基础注册：出错直接Panic
 func (c *Container) MustRegister(ctor any, scope LifetimeScope) {
 	if err := c.Register(ctor, scope); err != nil {
@@ -382,6 +447,20 @@ func (c *Container) MustRegisterAs(ctor any, interfaceType any, scope LifetimeSc
 	}
 }
 
+// MustRegisterInstance 便捷实例注册：出错直接Panic
+func (c *Container) MustRegisterInstance(instance any, scope LifetimeScope) {
+	if err := c.RegisterInstance(instance, scope); err != nil {
+		panic(fmt.Sprintf("【DI实例注册失败】%v", err))
+	}
+}
+
+// MustRegisterInstanceAs 便捷实例接口注册：出错直接Panic
+func (c *Container) MustRegisterInstanceAs(instance any, interfaceType any, scope LifetimeScope) {
+	if err := c.RegisterInstanceAs(instance, interfaceType, scope); err != nil {
+		panic(fmt.Sprintf("【DI实例接口注册失败】%v", err))
+	}
+}
+
 // MustResolve 便捷原始解析：出错直接Panic
 func (c *Container) MustResolve(out any) {
 	if err := c.Resolve(out); err != nil {
@@ -389,17 +468,23 @@ func (c *Container) MustResolve(out any) {
 	}
 }
 
-// 新增：Scope的MustResolve方法（与Container格式一致）
+// MustResolve 新增：Scope的MustResolve方法（与Container格式一致）
 func (s *Scope) MustResolve(out any) {
 	if err := s.Resolve(out); err != nil {
 		panic(fmt.Sprintf("【DI作用域解析失败】%v", err))
 	}
 }
 
-// ---------------------- 全局容器顶层泛型函数（直接调用di.Get[T]()、di.MustGet[T]()，极致简洁） ----------------------
+// MustRegister ---------------------- 全局容器顶层泛型函数（直接调用di.Get[T]()、di.MustGet[T]()，极致简洁） ----------------------
 func MustRegister(ctor any, scope LifetimeScope) { Global.MustRegister(ctor, scope) }
 func MustRegisterAs(ctor any, iface any, scope LifetimeScope) {
 	Global.MustRegisterAs(ctor, iface, scope)
+}
+func MustRegisterInstance(instance any, scope LifetimeScope) {
+	Global.MustRegisterInstance(instance, scope)
+}
+func MustRegisterInstanceAs(instance any, iface any, scope LifetimeScope) {
+	Global.MustRegisterInstanceAs(instance, iface, scope)
 }
 func MustResolve(out any) { Global.MustResolve(out) }
 
@@ -423,12 +508,12 @@ func MustGet[T any]() T {
 	return inst
 }
 
-// 新增：全局创建作用域的便捷方法
+// GlobalNewScope 新增：全局创建作用域的便捷方法
 func GlobalNewScope() *Scope {
 	return Global.NewScope()
 }
 
-// 新增：作用域版泛型Get - 传入Scope指针，实现Scoped生命周期泛型解析
+// ScopeGet 新增：作用域版泛型Get - 传入Scope指针，实现Scoped生命周期泛型解析
 func ScopeGet[T any](s *Scope) (T, error) {
 	var zero T
 	svcType := reflect.TypeOf((*T)(nil)).Elem()
@@ -439,7 +524,7 @@ func ScopeGet[T any](s *Scope) (T, error) {
 	return getTyped[T](s.root, svcType, instance)
 }
 
-// 新增：作用域版泛型MustGet - 传入Scope指针，出错Panic（推荐使用）
+// ScopeMustGet 新增：作用域版泛型MustGet - 传入Scope指针，出错Panic（推荐使用）
 func ScopeMustGet[T any](s *Scope) T {
 	inst, err := ScopeGet[T](s)
 	if err != nil {
@@ -455,7 +540,7 @@ func (c *Container) Reset() {
 	c.services = make(map[reflect.Type]*ServiceDef)
 }
 
-// 替换为👇 修复后代码
+// Reset 替换为👇 修复后代码
 func (s *Scope) Reset() {
 	s.mu.Lock()
 	defer s.mu.Unlock() // 正确：使用作用域自身的锁

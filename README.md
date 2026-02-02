@@ -10,7 +10,8 @@ Gofac 是一个受 [Autofac](https://autofac.org/) 启发的 Go 语言依赖注�
 - 🚀 **三种生命周期**：Transient（瞬时）、Singleton（单例）、Scoped（作用域）
 - 🔧 **构造函数注册**：自动解析依赖参数
 - 📦 **实例注册**：直接注册已创建的对象
-- 🎯 **接口注册**：支持接口类型注册
+- 🎯 **接口和具体类型注册**：支持接口类型和具体类型注册
+- 🏷️ **命名注册**：支持同一类型的多个实例注册 ⭐ 新功能
 - 🔍 **泛型支持**：类型安全的 `Get[T]()` 和 `MustGet[T]()` 方法
 - 🌐 **引用类型支持**：完整支持切片、映射、数组
 - 🔒 **线程安全**：所有操作并发安全
@@ -101,7 +102,9 @@ func NewUserRepo() *UserRepo {
 container.MustRegister(NewUserRepo, di.Singleton)
 ```
 
-#### 2. 接口注册
+#### 2. 接口和具体类型注册 ⭐ 新功能
+
+**接口注册：**
 
 ```go
 type ILogger interface {
@@ -126,7 +129,27 @@ logger := di.MustGet[ILogger]()
 logger.Log("Hello")
 ```
 
-#### 3. 实例注册 ⭐ 新功能
+**具体类型注册：**
+
+```go
+type UserService struct {
+    Name string
+}
+
+func NewUserService() *UserService {
+    return &UserService{Name: "service"}
+}
+
+// 注册为具体类型 *UserService
+container.MustRegisterAs(NewUserService, (*UserService)(nil), di.Singleton)
+
+// 通过具体类型解析
+service := di.MustGet[*UserService]()
+```
+
+> 详细说明请参考 [CONCRETE_TYPE_SUPPORT.md](CONCRETE_TYPE_SUPPORT.md)
+
+#### 3. 实例注册
 
 ```go
 // 直接注册已创建的实例
@@ -136,6 +159,35 @@ container.MustRegisterInstance(config, di.Singleton)
 // 解析
 resolvedConfig := di.MustGet[*Config]()
 ```
+
+#### 4. 命名注册 ⭐ 新功能
+
+支持同一类型的多个实例注册，适用于多数据库、多消息队列等场景。
+
+```go
+type Database struct {
+    Host string
+    Port int
+}
+
+// 注册多个数据库连接
+primary := &Database{Host: "primary.db", Port: 5432}
+replica := &Database{Host: "replica.db", Port: 5433}
+
+container.MustRegisterInstanceNamed("primary", primary, di.Singleton)
+container.MustRegisterInstanceNamed("replica", replica, di.Singleton)
+
+// 通过名称解析特定实例
+var primaryDB *Database
+container.MustResolveNamed("primary", &primaryDB)
+
+// 解析所有同类型的实例
+var allDBs []*Database
+container.MustResolveAll(&allDBs)
+fmt.Printf("Total databases: %d\n", len(allDBs)) // 输出: 2
+```
+
+> 详细说明请参考 [NAMED_REGISTRATION.md](NAMED_REGISTRATION.md)
 
 ### 引用类型支持 ⭐ 新功能
 

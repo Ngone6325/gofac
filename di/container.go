@@ -21,8 +21,9 @@ type ServiceDef struct {
 
 // Container DI容器核心：管理所有服务，保证并发安全
 type Container struct {
-	services map[reflect.Type]*ServiceDef
-	mu       sync.RWMutex
+	services      map[reflect.Type]*ServiceDef            // 默认（无名）服务
+	namedServices map[string]map[reflect.Type]*ServiceDef // 命名服务：name -> type -> ServiceDef
+	mu            sync.RWMutex
 }
 
 // Scope 同一个Scope内Scoped实例唯一，不同Scope相互隔离
@@ -35,7 +36,8 @@ type Scope struct {
 // NewContainer 创建新的DI容器
 func NewContainer() *Container {
 	return &Container{
-		services: make(map[reflect.Type]*ServiceDef),
+		services:      make(map[reflect.Type]*ServiceDef),
+		namedServices: make(map[string]map[reflect.Type]*ServiceDef),
 	}
 }
 
@@ -78,20 +80,32 @@ func (c *Container) register(ctor any, interfaceType any, scope LifetimeScope) e
 	// 确定最终注册的服务类型（接口/实现类型）
 	svcType := implType
 	if interfaceType != nil {
-		// ---------- 修复核心：重写接口类型解析，增加空值校验，更健壮 ----------
-		// 第一步：先通过Type获取接口类型，避免ValueOf(nil)的解析问题
-		ifaceType := reflect.TypeOf(interfaceType)
-		// 校验：必须是指针类型，且指向的元素是接口
-		if ifaceType.Kind() != reflect.Ptr || ifaceType.Elem().Kind() != reflect.Interface {
+		// 解析目标类型
+		targetType := reflect.TypeOf(interfaceType)
+
+		// 检查是否是指针类型
+		if targetType.Kind() != reflect.Ptr {
 			return ErrInvalidInterfaceType
 		}
-		// 提取真实的接口类型（指针指向的元素）
-		svcType = ifaceType.Elem()
-		// ---------------------------------------------------------------------
 
-		// 校验实现类型是否实现接口
-		if !implType.Implements(svcType) {
-			return fmt.Errorf("类型%s未实现接口%s", implType, svcType)
+		// 获取指针指向的元素类型
+		elemType := targetType.Elem()
+
+		// 判断是指向接口还是具体类型
+		if elemType.Kind() == reflect.Interface {
+			// 接口类型：使用接口类型作为服务类型
+			svcType = elemType
+			if !implType.Implements(svcType) {
+				return fmt.Errorf("类型%s未实现接口%s", implType, svcType)
+			}
+		} else {
+			// 具体类型：使用完整的指针类型作为服务类型
+			// 例如：(*UserService)(nil) -> 注册为 *UserService 类型
+			svcType = targetType
+			// 增强类型兼容性检查，支持指针/值类型转换
+			if !isTypeCompatible(implType, svcType) {
+				return fmt.Errorf("类型%s无法转换为目标类型%s", implType, svcType)
+			}
 		}
 	}
 
@@ -145,16 +159,32 @@ func (c *Container) registerInstance(instance any, interfaceType any, scope Life
 	// 确定最终注册的服务类型（接口/实现类型）
 	svcType := implType
 	if interfaceType != nil {
-		// 解析接口类型
-		ifaceType := reflect.TypeOf(interfaceType)
-		if ifaceType.Kind() != reflect.Ptr || ifaceType.Elem().Kind() != reflect.Interface {
+		// 解析目标类型
+		targetType := reflect.TypeOf(interfaceType)
+
+		// 检查是否是指针类型
+		if targetType.Kind() != reflect.Ptr {
 			return ErrInvalidInterfaceType
 		}
-		svcType = ifaceType.Elem()
 
-		// 校验实现类型是否实现接口
-		if !implType.Implements(svcType) {
-			return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+		// 获取指针指向的元素类型
+		elemType := targetType.Elem()
+
+		// 判断是指向接口还是具体类型
+		if elemType.Kind() == reflect.Interface {
+			// 接口类型：使用接口类型作为服务类型
+			svcType = elemType
+			if !implType.Implements(svcType) {
+				return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+			}
+		} else {
+			// 具体类型：使用完整的指针类型作为服务类型
+			// 例如：(*UserService)(nil) -> 注册为 *UserService 类型
+			svcType = targetType
+			// 增强类型兼容性检查，支持指针/值类型转换
+			if !isTypeCompatible(implType, svcType) {
+				return fmt.Errorf("实例类型%s无法转换为目标类型%s", implType, svcType)
+			}
 		}
 	}
 
@@ -173,6 +203,107 @@ func (c *Container) registerInstance(instance any, interfaceType any, scope Life
 	return nil
 }
 
+// RegisterInstanceNamed 命名实例注册：注册带名称的实例，允许同一类型多个实例
+func (c *Container) RegisterInstanceNamed(name string, instance any, scope LifetimeScope) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.registerInstanceNamed(name, instance, nil, scope)
+}
+
+// RegisterInstanceAsNamed 命名实例接口注册：注册带名称的实例为指定类型
+func (c *Container) RegisterInstanceAsNamed(name string, instance any, interfaceType any, scope LifetimeScope) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.registerInstanceNamed(name, instance, interfaceType, scope)
+}
+
+// registerInstanceNamed 内部命名实例注册逻辑
+func (c *Container) registerInstanceNamed(name string, instance any, interfaceType any, scope LifetimeScope) error {
+	// Transient不支持实例注册
+	if scope == Transient {
+		return ErrTransientInstance
+	}
+
+	// 校验实例不为 nil
+	if instance == nil {
+		return ErrNilInstance
+	}
+
+	// 校验名称不为空
+	if name == "" {
+		return fmt.Errorf("命名注册的名称不能为空")
+	}
+
+	instVal := reflect.ValueOf(instance)
+	implType := instVal.Type()
+
+	// 确定最终注册的服务类型
+	svcType := implType
+	if interfaceType != nil {
+		targetType := reflect.TypeOf(interfaceType)
+		if targetType.Kind() != reflect.Ptr {
+			return ErrInvalidInterfaceType
+		}
+
+		elemType := targetType.Elem()
+		if elemType.Kind() == reflect.Interface {
+			svcType = elemType
+			if !implType.Implements(svcType) {
+				return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+			}
+		} else {
+			svcType = targetType
+			if !isTypeCompatible(implType, svcType) {
+				return fmt.Errorf("实例类型%s无法转换为目标类型%s", implType, svcType)
+			}
+		}
+	}
+
+	// 初始化命名服务map
+	if c.namedServices[name] == nil {
+		c.namedServices[name] = make(map[reflect.Type]*ServiceDef)
+	}
+
+	// 检查重复注册
+	if _, exists := c.namedServices[name][svcType]; exists {
+		return fmt.Errorf("%w，名称：%s，类型：%s", ErrRegisterDuplicate, name, svcType)
+	}
+
+	// 封装服务定义并加入容器
+	c.namedServices[name][svcType] = &ServiceDef{
+		implType:   implType,
+		scope:      scope,
+		instance:   instVal,
+		isInstance: true,
+	}
+	return nil
+}
+
+// isTypeCompatible 检查两种类型是否兼容（支持指针/值类型转换）
+func isTypeCompatible(implType, targetType reflect.Type) bool {
+	// 直接可分配（包括相同类型）
+	if implType.AssignableTo(targetType) {
+		return true
+	}
+
+	// 可转换
+	if implType.ConvertibleTo(targetType) {
+		return true
+	}
+
+	// 检查指针类型兼容性：如果实现是值类型，目标是对应指针类型
+	if implType.Kind() != reflect.Ptr && reflect.PointerTo(implType).AssignableTo(targetType) {
+		return true
+	}
+
+	// 检查反向指针类型兼容性：如果实现是指针类型，目标是对应值类型
+	if implType.Kind() == reflect.Ptr && implType.Elem().AssignableTo(targetType) {
+		return true
+	}
+
+	return false
+}
+
 // Resolve 原始解析：通过指针接收实例，返回错误（兼容旧逻辑）
 func (c *Container) Resolve(out any) error {
 	outVal := reflect.ValueOf(out)
@@ -185,6 +316,79 @@ func (c *Container) Resolve(out any) error {
 		return err
 	}
 	outVal.Elem().Set(instance)
+	return nil
+}
+
+// ResolveNamed 命名解析：通过名称解析特定的服务实例
+func (c *Container) ResolveNamed(name string, out any) error {
+	outVal := reflect.ValueOf(out)
+	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
+		return ErrInvalidOutPtr
+	}
+	svcType := outVal.Elem().Type()
+
+	c.mu.RLock()
+	namedMap, exists := c.namedServices[name]
+	if !exists {
+		c.mu.RUnlock()
+		return fmt.Errorf("命名服务不存在，名称：%s", name)
+	}
+	serviceDef, exists := namedMap[svcType]
+	c.mu.RUnlock()
+
+	if !exists {
+		return fmt.Errorf("%w，名称：%s，类型：%s", ErrServiceNotRegistered, name, svcType)
+	}
+
+	// 命名服务目前只支持实例注册，直接返回实例
+	if serviceDef.isInstance {
+		outVal.Elem().Set(serviceDef.instance)
+		return nil
+	}
+
+	return fmt.Errorf("命名服务暂不支持构造函数注册，名称：%s", name)
+}
+
+// ResolveAll 解析所有同类型的服务（包括默认和所有命名服务）
+func (c *Container) ResolveAll(out any) error {
+	outVal := reflect.ValueOf(out)
+	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
+		return ErrInvalidOutPtr
+	}
+
+	// 检查输出类型必须是切片指针
+	elemType := outVal.Elem().Type()
+	if elemType.Kind() != reflect.Slice {
+		return fmt.Errorf("ResolveAll 的输出参数必须是切片指针，当前类型：%s", elemType)
+	}
+
+	// 获取切片元素类型
+	itemType := elemType.Elem()
+
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// 创建结果切片
+	results := reflect.MakeSlice(elemType, 0, 0)
+
+	// 添加默认服务（如果存在）
+	if serviceDef, exists := c.services[itemType]; exists {
+		if serviceDef.isInstance {
+			results = reflect.Append(results, serviceDef.instance)
+		}
+	}
+
+	// 添加所有命名服务
+	for _, namedMap := range c.namedServices {
+		if serviceDef, exists := namedMap[itemType]; exists {
+			if serviceDef.isInstance {
+				results = reflect.Append(results, serviceDef.instance)
+			}
+		}
+	}
+
+	// 设置结果
+	outVal.Elem().Set(results)
 	return nil
 }
 
@@ -461,10 +665,38 @@ func (c *Container) MustRegisterInstanceAs(instance any, interfaceType any, scop
 	}
 }
 
+// MustRegisterInstanceNamed 便捷命名实例注册：出错直接Panic
+func (c *Container) MustRegisterInstanceNamed(name string, instance any, scope LifetimeScope) {
+	if err := c.RegisterInstanceNamed(name, instance, scope); err != nil {
+		panic(fmt.Sprintf("【DI命名实例注册失败】%v", err))
+	}
+}
+
+// MustRegisterInstanceAsNamed 便捷命名实例接口注册：出错直接Panic
+func (c *Container) MustRegisterInstanceAsNamed(name string, instance any, interfaceType any, scope LifetimeScope) {
+	if err := c.RegisterInstanceAsNamed(name, instance, interfaceType, scope); err != nil {
+		panic(fmt.Sprintf("【DI命名实例接口注册失败】%v", err))
+	}
+}
+
 // MustResolve 便捷原始解析：出错直接Panic
 func (c *Container) MustResolve(out any) {
 	if err := c.Resolve(out); err != nil {
 		panic(fmt.Sprintf("【DI解析失败】%v", err))
+	}
+}
+
+// MustResolveNamed 便捷命名解析：出错直接Panic
+func (c *Container) MustResolveNamed(name string, out any) {
+	if err := c.ResolveNamed(name, out); err != nil {
+		panic(fmt.Sprintf("【DI命名解析失败】%v", err))
+	}
+}
+
+// MustResolveAll 便捷解析所有：出错直接Panic
+func (c *Container) MustResolveAll(out any) {
+	if err := c.ResolveAll(out); err != nil {
+		panic(fmt.Sprintf("【DI解析所有失败】%v", err))
 	}
 }
 

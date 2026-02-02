@@ -229,11 +229,14 @@ type DatabaseConfig struct {
 }
 
 type Database struct {
-	Config *DatabaseConfig
+	Config       *DatabaseConfig
+	Settings     map[string]string
+	AllowedRoles []string
+	UserService  *UserService
 }
 
-func NewDatabase(config *DatabaseConfig) *Database {
-	return &Database{Config: config}
+func NewDatabase(config *DatabaseConfig, settings map[string]string, allowedRoles []string, userService *UserService) *Database {
+	return &Database{Config: config, Settings: settings, AllowedRoles: allowedRoles, UserService: userService}
 }
 
 func ExampleComplexReferenceTypes() {
@@ -245,7 +248,19 @@ func ExampleComplexReferenceTypes() {
 		Ports:    map[string]int{"primary": 5432, "replica": 5433},
 		Replicas: [3]string{"replica1", "replica2", "replica3"},
 	}
+	settings := map[string]string{
+		"db_host": "localhost",
+		"db_port": "5432",
+		"db_name": "mydb",
+	}
+	allowedRoles := []string{"admin", "user", "guest"}
+	userService := NewUserService(allowedRoles)
+
 	container.MustRegisterInstance(dbConfig, di.Singleton)
+	container.MustRegisterInstance(settings, di.Singleton)
+	container.MustRegisterInstance(allowedRoles, di.Singleton)
+	container.MustRegisterInstanceAs(userService, (*UserService)(nil), di.Singleton)
+	//container.MustRegisterInstance(userService, di.Singleton)
 
 	// 注册数据库服务
 	container.MustRegister(NewDatabase, di.Singleton)
@@ -257,10 +272,210 @@ func ExampleComplexReferenceTypes() {
 	fmt.Printf("Hosts: %v\n", db.Config.Hosts)
 	fmt.Printf("Primary Port: %d\n", db.Config.Ports["primary"])
 	fmt.Printf("Replicas: %v\n", db.Config.Replicas)
+	fmt.Printf("Allowed Roles: %v\n", db.AllowedRoles)
+	fmt.Printf("DB Host: %s\n", db.Settings["db_host"])
+	fmt.Printf("DB Port: %s\n", db.Settings["db_port"])
+	fmt.Printf("Allowed Roles: %s\n", db.UserService.AllowedRoles)
+
 	// Output:
 	// Hosts: [host1 host2 host3]
 	// Primary Port: 5432
 	// Replicas: [replica1 replica2 replica3]
+}
+
+type ArrayUserService struct {
+	Services []*UserService
+}
+
+func NewArrayUserService(services []*UserService) *ArrayUserService {
+	return &ArrayUserService{Services: services}
+}
+
+func ExampleMoreComplexReferenceTypes() {
+	container := di.NewContainer()
+
+	// 使用命名注册来注册多个同类型的实例
+	service1 := NewUserService([]string{"admin", "user", "guest"})
+	service2 := NewUserService([]string{"admin2", "user2", "guest2"})
+	service3 := NewUserService([]string{"admin3", "user3", "guest3"})
+
+	container.MustRegisterInstanceNamed("service1", service1, di.Singleton)
+	container.MustRegisterInstanceNamed("service2", service2, di.Singleton)
+	container.MustRegisterInstanceNamed("service3", service3, di.Singleton)
+
+	// 解析所有同类型的服务
+	var services []*UserService
+	container.MustResolveAll(&services)
+
+	fmt.Printf("Total services: %d\n", len(services))
+	for i, service := range services {
+		fmt.Printf("Service %d - Allowed Roles: %v\n", i+1, service.AllowedRoles)
+	}
+}
+
+// ==================== 示例10：多数据库连接（实际项目场景）====================
+
+type DBConnection struct {
+	Name string
+	Host string
+	Port int
+}
+
+func ExampleMultipleDatabases() {
+	container := di.NewContainer()
+
+	// 注册主库和多个从库
+	primary := &DBConnection{Name: "primary", Host: "primary.db.com", Port: 5432}
+	replica1 := &DBConnection{Name: "replica1", Host: "replica1.db.com", Port: 5432}
+	replica2 := &DBConnection{Name: "replica2", Host: "replica2.db.com", Port: 5432}
+
+	container.MustRegisterInstanceNamed("primary", primary, di.Singleton)
+	container.MustRegisterInstanceNamed("replica1", replica1, di.Singleton)
+	container.MustRegisterInstanceNamed("replica2", replica2, di.Singleton)
+
+	// 解析主库
+	var primaryDB *DBConnection
+	container.MustResolveNamed("primary", &primaryDB)
+	fmt.Printf("Primary DB: %s:%d\n", primaryDB.Host, primaryDB.Port)
+
+	// 解析所有数据库连接
+	var allDBs []*DBConnection
+	container.MustResolveAll(&allDBs)
+	fmt.Printf("Total DB connections: %d\n", len(allDBs))
+	for _, db := range allDBs {
+		fmt.Printf("  - %s: %s:%d\n", db.Name, db.Host, db.Port)
+	}
+}
+
+// ==================== 示例11：消息队列（实际项目场景）====================
+
+type MessageQueue struct {
+	Name  string
+	Topic string
+}
+
+func (mq *MessageQueue) Publish(message string) {
+	fmt.Printf("[%s] Publishing to %s: %s\n", mq.Name, mq.Topic, message)
+}
+
+func ExampleMessageQueues() {
+	container := di.NewContainer()
+
+	// 注册多个消息队列
+	orderQueue := &MessageQueue{Name: "OrderQueue", Topic: "orders"}
+	paymentQueue := &MessageQueue{Name: "PaymentQueue", Topic: "payments"}
+	notificationQueue := &MessageQueue{Name: "NotificationQueue", Topic: "notifications"}
+
+	container.MustRegisterInstanceNamed("order", orderQueue, di.Singleton)
+	container.MustRegisterInstanceNamed("payment", paymentQueue, di.Singleton)
+	container.MustRegisterInstanceNamed("notification", notificationQueue, di.Singleton)
+
+	// 使用特定队列
+	var orderMQ *MessageQueue
+	container.MustResolveNamed("order", &orderMQ)
+	orderMQ.Publish("New order #12345")
+
+	// 广播到所有队列
+	var allQueues []*MessageQueue
+	container.MustResolveAll(&allQueues)
+	fmt.Printf("\nBroadcasting to all %d queues:\n", len(allQueues))
+	for _, queue := range allQueues {
+		queue.Publish("System maintenance at 2AM")
+	}
+}
+
+// ==================== 示例12：缓存策略（实际项目场景）====================
+
+type ICache interface {
+	Get(key string) string
+	Set(key string, value string)
+}
+
+type RedisCache struct {
+	Name string
+}
+
+func (r *RedisCache) Get(key string) string {
+	return fmt.Sprintf("[Redis:%s] %s", r.Name, key)
+}
+
+func (r *RedisCache) Set(key string, value string) {
+	fmt.Printf("[Redis:%s] Set %s = %s\n", r.Name, key, value)
+}
+
+type MemoryCache struct {
+	Name string
+}
+
+func (m *MemoryCache) Get(key string) string {
+	return fmt.Sprintf("[Memory:%s] %s", m.Name, key)
+}
+
+func (m *MemoryCache) Set(key string, value string) {
+	fmt.Printf("[Memory:%s] Set %s = %s\n", m.Name, key, value)
+}
+
+func ExampleCacheStrategies() {
+	container := di.NewContainer()
+
+	// 注册多种缓存实现
+	redis := &RedisCache{Name: "MainRedis"}
+	memory := &MemoryCache{Name: "LocalMemory"}
+	sessionRedis := &RedisCache{Name: "SessionRedis"}
+
+	container.MustRegisterInstanceAsNamed("redis", redis, (*ICache)(nil), di.Singleton)
+	container.MustRegisterInstanceAsNamed("memory", memory, (*ICache)(nil), di.Singleton)
+	container.MustRegisterInstanceAsNamed("session", sessionRedis, (*ICache)(nil), di.Singleton)
+
+	// 使用特定缓存
+	var mainCache ICache
+	container.MustResolveNamed("redis", &mainCache)
+	fmt.Println(mainCache.Get("user:1001"))
+
+	// 获取所有缓存实现
+	var allCaches []ICache
+	container.MustResolveAll(&allCaches)
+	fmt.Printf("\nAll cache implementations (%d):\n", len(allCaches))
+	for _, cache := range allCaches {
+		fmt.Println(cache.Get("test-key"))
+	}
+}
+
+// ==================== 示例13：微服务客户端（实际项目场景）====================
+
+type ServiceClient struct {
+	ServiceName string
+	BaseURL     string
+}
+
+func (sc *ServiceClient) Call(endpoint string) string {
+	return fmt.Sprintf("[%s] Calling %s%s", sc.ServiceName, sc.BaseURL, endpoint)
+}
+
+func ExampleMicroserviceClients() {
+	container := di.NewContainer()
+
+	// 注册多个微服务客户端
+	userService := &ServiceClient{ServiceName: "UserService", BaseURL: "http://user-service:8080"}
+	orderService := &ServiceClient{ServiceName: "OrderService", BaseURL: "http://order-service:8081"}
+	paymentService := &ServiceClient{ServiceName: "PaymentService", BaseURL: "http://payment-service:8082"}
+
+	container.MustRegisterInstanceNamed("user", userService, di.Singleton)
+	container.MustRegisterInstanceNamed("order", orderService, di.Singleton)
+	container.MustRegisterInstanceNamed("payment", paymentService, di.Singleton)
+
+	// 调用特定服务
+	var userClient *ServiceClient
+	container.MustResolveNamed("user", &userClient)
+	fmt.Println(userClient.Call("/api/users/1001"))
+
+	// 健康检查所有服务
+	var allClients []*ServiceClient
+	container.MustResolveAll(&allClients)
+	fmt.Printf("\nHealth check for %d services:\n", len(allClients))
+	for _, client := range allClients {
+		fmt.Println(client.Call("/health"))
+	}
 }
 
 // ==================== 主函数：运行所有示例 ====================
@@ -289,4 +504,19 @@ func main() {
 
 	fmt.Println("\n========== 示例8：复杂引用类型组合 ==========")
 	ExampleComplexReferenceTypes()
+
+	fmt.Println("\n========== 示例9：命名注册 - 多个同类型实例 ==========")
+	ExampleMoreComplexReferenceTypes()
+
+	fmt.Println("\n========== 示例10：多数据库连接（实际项目场景）==========")
+	ExampleMultipleDatabases()
+
+	fmt.Println("\n========== 示例11：消息队列（实际项目场景）==========")
+	ExampleMessageQueues()
+
+	fmt.Println("\n========== 示例12：缓存策略（实际项目场景）==========")
+	ExampleCacheStrategies()
+
+	fmt.Println("\n========== 示例13：微服务客户端（实际项目场景）==========")
+	ExampleMicroserviceClients()
 }

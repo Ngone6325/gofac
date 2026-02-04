@@ -3,6 +3,8 @@
 [![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat&logo=go)](https://go.dev/)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+[中文](README.md) | [English](README_EN.md)
+
 Gofac 是一个受 [Autofac](https://autofac.org/) 启发的 Go 语言依赖注入（DI）容器，提供简洁、类型安全的依赖管理方案。
 
 ## ✨ 特性
@@ -23,7 +25,7 @@ Gofac 是一个受 [Autofac](https://autofac.org/) 启发的 Go 语言依赖注�
 ## 📦 安装
 
 ```bash
-go get github.com/yourusername/gofac
+go get github.com/Ngone6325/gofac
 ```
 
 ## 🚀 快速开始
@@ -35,7 +37,7 @@ package main
 
 import (
     "fmt"
-    "gofac/di"
+    "gofac"
 )
 
 type UserRepo struct {
@@ -56,11 +58,11 @@ func NewUserService(repo *UserRepo) *UserService {
 
 func main() {
     // 创建容器
-    container := di.NewContainer()
+    container := gofac.NewContainer()
 
     // 注册服务
-    container.MustRegister(NewUserRepo, di.Singleton)
-    container.MustRegister(NewUserService, di.Transient)
+    container.MustRegister(NewUserRepo, gofac.Singleton)
+    container.MustRegister(NewUserService, gofac.Transient)
 
     // 解析服务
     var service *UserService
@@ -74,11 +76,11 @@ func main() {
 
 ```go
 // 使用全局容器
-di.MustRegister(NewUserRepo, di.Singleton)
-di.MustRegister(NewUserService, di.Transient)
+gofac.MustRegister(NewUserRepo, gofac.Singleton)
+gofac.MustRegister(NewUserService, gofac.Transient)
 
 // 泛型解析
-service := di.MustGet[*UserService]()
+service := gofac.MustGet[*UserService]()
 fmt.Println(service.Repo.ConnStr)
 ```
 
@@ -101,7 +103,7 @@ func NewUserRepo() *UserRepo {
     return &UserRepo{}
 }
 
-container.MustRegister(NewUserRepo, di.Singleton)
+container.MustRegister(NewUserRepo, gofac.Singleton)
 ```
 
 #### 2. 接口和具体类型注册 ⭐ 新功能
@@ -124,10 +126,10 @@ func NewConsoleLogger() *ConsoleLogger {
 }
 
 // 注册为接口类型
-container.MustRegisterAs(NewConsoleLogger, (*ILogger)(nil), di.Singleton)
+container.MustRegisterAs(NewConsoleLogger, (*ILogger)(nil), gofac.Singleton)
 
 // 通过接口解析
-logger := di.MustGet[ILogger]()
+logger := gofac.MustGet[ILogger]()
 logger.Log("Hello")
 ```
 
@@ -143,10 +145,10 @@ func NewUserService() *UserService {
 }
 
 // 注册为具体类型 *UserService
-container.MustRegisterAs(NewUserService, (*UserService)(nil), di.Singleton)
+container.MustRegisterAs(NewUserService, (*UserService)(nil), gofac.Singleton)
 
 // 通过具体类型解析
-service := di.MustGet[*UserService]()
+service := gofac.MustGet[*UserService]()
 ```
 
 > 详细说明请参考 [CONCRETE_TYPE_SUPPORT.md](docs/CONCRETE_TYPE_SUPPORT.md)
@@ -156,10 +158,10 @@ service := di.MustGet[*UserService]()
 ```go
 // 直接注册已创建的实例
 config := &Config{AppName: "MyApp", Port: 8080}
-container.MustRegisterInstance(config, di.Singleton)
+container.MustRegisterInstance(config, gofac.Singleton)
 
 // 解析
-resolvedConfig := di.MustGet[*Config]()
+resolvedConfig := gofac.MustGet[*Config]()
 ```
 
 #### 4. 命名注册 ⭐ 新功能
@@ -176,8 +178,8 @@ type Database struct {
 primary := &Database{Host: "primary.db", Port: 5432}
 replica := &Database{Host: "replica.db", Port: 5433}
 
-container.MustRegisterInstanceNamed("primary", primary, di.Singleton)
-container.MustRegisterInstanceNamed("replica", replica, di.Singleton)
+container.MustRegisterInstanceNamed("primary", primary, gofac.Singleton)
+container.MustRegisterInstanceNamed("replica", replica, gofac.Singleton)
 
 // 通过名称解析特定实例
 var primaryDB *Database
@@ -207,11 +209,11 @@ func NewDatabaseManager(dbs []*Database) *DatabaseManager {
 }
 
 // 注册多个数据库实例
-container.MustRegisterInstanceNamed("primary", &Database{Host: "primary"}, di.Singleton)
-container.MustRegisterInstanceNamed("replica", &Database{Host: "replica"}, di.Singleton)
+container.MustRegisterInstanceNamed("primary", &Database{Host: "primary"}, gofac.Singleton)
+container.MustRegisterInstanceNamed("replica", &Database{Host: "replica"}, gofac.Singleton)
 
 // 注册 DatabaseManager - 自动注入所有 *Database 实例
-container.MustRegister(NewDatabaseManager, di.Singleton)
+container.MustRegister(NewDatabaseManager, gofac.Singleton)
 
 var manager *DatabaseManager
 container.MustResolve(&manager)
@@ -236,11 +238,11 @@ func NewCacheManager(caches map[string]ICache) *CacheManager {
 }
 
 // 注册多个缓存实现
-container.MustRegisterInstanceAsNamed("redis", &RedisCache{}, (*ICache)(nil), di.Singleton)
-container.MustRegisterInstanceAsNamed("memory", &MemoryCache{}, (*ICache)(nil), di.Singleton)
+container.MustRegisterInstanceAsNamed("redis", &RedisCache{}, (*ICache)(nil), gofac.Singleton)
+container.MustRegisterInstanceAsNamed("memory", &MemoryCache{}, (*ICache)(nil), gofac.Singleton)
 
 // 注册 CacheManager - 自动注入所有命名缓存实例
-container.MustRegister(NewCacheManager, di.Singleton)
+container.MustRegister(NewCacheManager, gofac.Singleton)
 
 var manager *CacheManager
 container.MustResolve(&manager)
@@ -257,7 +259,7 @@ fmt.Printf("Total caches: %d\n", len(manager.Caches)) // 输出: 2
 ```go
 // 注册切片
 roles := []string{"admin", "user", "guest"}
-container.MustRegisterInstance(roles, di.Singleton)
+container.MustRegisterInstance(roles, gofac.Singleton)
 
 // 作为依赖注入
 type UserService struct {
@@ -268,7 +270,7 @@ func NewUserService(roles []string) *UserService {
     return &UserService{AllowedRoles: roles}
 }
 
-container.MustRegister(NewUserService, di.Singleton)
+container.MustRegister(NewUserService, gofac.Singleton)
 ```
 
 #### 映射（Map）
@@ -279,7 +281,7 @@ settings := map[string]string{
     "db_host": "localhost",
     "db_port": "5432",
 }
-container.MustRegisterInstance(settings, di.Singleton)
+container.MustRegisterInstance(settings, gofac.Singleton)
 
 // 作为依赖注入
 type ConfigService struct {
@@ -290,7 +292,7 @@ func NewConfigService(settings map[string]string) *ConfigService {
     return &ConfigService{Settings: settings}
 }
 
-container.MustRegister(NewConfigService, di.Singleton)
+container.MustRegister(NewConfigService, gofac.Singleton)
 ```
 
 #### 数组（Array）
@@ -298,25 +300,25 @@ container.MustRegister(NewConfigService, di.Singleton)
 ```go
 // 注册数组
 priorities := [5]int{1, 2, 3, 4, 5}
-container.MustRegisterInstance(priorities, di.Singleton)
+container.MustRegisterInstance(priorities, gofac.Singleton)
 
 // 解析
-resolved := di.MustGet[[5]int]()
+resolved := gofac.MustGet[[5]int]()
 ```
 
 ### 作用域（Scope）
 
 ```go
 // 注册 Scoped 服务
-container.MustRegister(NewRequestContext, di.Scoped)
+container.MustRegister(NewRequestContext, gofac.Scoped)
 
 // 创建作用域
 scope1 := container.NewScope()
 scope2 := container.NewScope()
 
 // 每个作用域有独立的实例
-ctx1 := di.ScopeMustGet[*RequestContext](scope1)
-ctx2 := di.ScopeMustGet[*RequestContext](scope2)
+ctx1 := gofac.ScopeMustGet[*RequestContext](scope1)
+ctx2 := gofac.ScopeMustGet[*RequestContext](scope2)
 
 fmt.Println(ctx1 != ctx2) // true
 ```
@@ -350,17 +352,17 @@ fmt.Println(ctx1 != ctx2) // true
 ### 全局容器方法
 
 ```go
-di.MustRegister(ctor, scope)
-di.MustRegisterAs(ctor, iface, scope)
-di.MustRegisterInstance(instance, scope)
-di.MustRegisterInstanceAs(instance, iface, scope)
-di.MustResolve(out)
-di.Get[T]()
-di.MustGet[T]()
-di.GlobalNewScope()
-di.ScopeGet[T](scope)
-di.ScopeMustGet[T](scope)
-di.GlobalReset()
+gofac.MustRegister(ctor, scope)
+gofac.MustRegisterAs(ctor, iface, scope)
+gofac.MustRegisterInstance(instance, scope)
+gofac.MustRegisterInstanceAs(instance, iface, scope)
+gofac.MustResolve(out)
+gofac.Get[T]()
+gofac.MustGet[T]()
+gofac.GlobalNewScope()
+gofac.ScopeGet[T](scope)
+gofac.ScopeMustGet[T](scope)
+gofac.GlobalReset()
 ```
 
 ## 🎯 使用场景
@@ -369,25 +371,25 @@ di.GlobalReset()
 
 ```go
 // 注册数据库连接（Singleton）
-di.MustRegister(NewDatabase, di.Singleton)
+gofac.MustRegister(NewDatabase, gofac.Singleton)
 
 // 注册仓储（Singleton）
-di.MustRegisterAs(NewUserRepo, (*IUserRepo)(nil), di.Singleton)
+gofac.MustRegisterAs(NewUserRepo, (*IUserRepo)(nil), gofac.Singleton)
 
 // 注册服务（Transient）
-di.MustRegister(NewUserService, di.Transient)
+gofac.MustRegister(NewUserService, gofac.Transient)
 
 // HTTP 处理器
 func UserHandler(w http.ResponseWriter, r *http.Request) {
     // 创建请求作用域
-    scope := di.GlobalNewScope()
+    scope := gofac.GlobalNewScope()
 
     // 注册请求上下文（Scoped）
     ctx := &RequestContext{RequestID: uuid.New().String()}
-    scope.MustRegisterInstance(ctx, di.Scoped)
+    scope.MustRegisterInstance(ctx, gofac.Scoped)
 
     // 解析服务
-    service := di.ScopeMustGet[*UserService](scope)
+    service := gofac.ScopeMustGet[*UserService](scope)
     // ... 处理请求
 }
 ```
@@ -396,17 +398,17 @@ func UserHandler(w http.ResponseWriter, r *http.Request) {
 
 ```go
 func TestUserService(t *testing.T) {
-    container := di.NewContainer()
+    container := gofac.NewContainer()
 
     // 注入 mock 对象
     mockRepo := &MockUserRepo{}
-    container.MustRegisterInstanceAs(mockRepo, (*IUserRepo)(nil), di.Singleton)
+    container.MustRegisterInstanceAs(mockRepo, (*IUserRepo)(nil), gofac.Singleton)
 
     // 注册待测试服务
-    container.MustRegister(NewUserService, di.Transient)
+    container.MustRegister(NewUserService, gofac.Transient)
 
     // 测试
-    service := di.MustGet[*UserService]()
+    service := gofac.MustGet[*UserService]()
     // ... 断言
 }
 ```
@@ -440,9 +442,6 @@ go run example_demo.go
 # 运行所有测试
 go test ./...
 
-# 运行 di 包测试
-go test ./di -v
-
 # 运行示例
 go run example_demo.go
 ```
@@ -454,7 +453,7 @@ go run example_demo.go
 ```go
 // ❌ 错误：实例注册不支持 Transient
 config := &Config{}
-container.RegisterInstance(config, di.Transient) // 返回 ErrTransientInstance
+container.RegisterInstance(config, gofac.Transient) // 返回 ErrTransientInstance
 ```
 
 ### 2. 引用类型的并发安全
@@ -462,15 +461,15 @@ container.RegisterInstance(config, di.Transient) // 返回 ErrTransientInstance
 ```go
 // ❌ 不安全：多个 goroutine 同时修改
 settings := map[string]string{"key": "value"}
-container.MustRegisterInstance(settings, di.Singleton)
+container.MustRegisterInstance(settings, gofac.Singleton)
 
 // ✅ 安全：使用 sync.Map
 var settings sync.Map
-container.MustRegisterInstance(&settings, di.Singleton)
+container.MustRegisterInstance(&settings, gofac.Singleton)
 
 // ✅ 安全：只读访问
 roles := []string{"admin", "user"}  // 注册后不修改
-container.MustRegisterInstance(roles, di.Singleton)
+container.MustRegisterInstance(roles, gofac.Singleton)
 ```
 
 ### 3. 循环依赖
@@ -480,8 +479,8 @@ container.MustRegisterInstance(roles, di.Singleton)
 func NewA(b *B) *A { return &A{B: b} }
 func NewB(a *A) *B { return &B{A: a} }
 
-container.MustRegister(NewA, di.Singleton)
-container.MustRegister(NewB, di.Singleton)
+container.MustRegister(NewA, gofac.Singleton)
+container.MustRegister(NewB, gofac.Singleton)
 
 // 解析时会报错：ErrResolveCircularDependency
 ```
@@ -500,6 +499,6 @@ MIT License
 
 ---
 
-**作者**: Your Name
+**作者**: Ngone6325
 **版本**: v1.1.0
 **更新日期**: 2026-02-02

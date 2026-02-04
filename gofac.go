@@ -6,34 +6,34 @@ import (
 	"sync"
 )
 
-// ServiceDef 服务定义：存储注册元信息、缓存参数类型和单例实例
+// ServiceDef Service definition: stores registration metadata, cached parameter types, and singleton instances
 type ServiceDef struct {
-	implType   reflect.Type   // 服务实现类型（构造函数返回值或实例类型）
-	scope      LifetimeScope  // 生命周期
-	instance   reflect.Value  // 单例实例缓存或预注册实例
-	ctor       reflect.Value  // 构造函数反射值（实例注册时为空）
-	ctorType   reflect.Type   // 构造函数反射类型（实例注册时为空）
-	once       sync.Once      // 单例实例初始化原子操作
-	paramTypes []reflect.Type // 缓存构造函数参数类型（核心优化）
-	paramOnce  sync.Once      // 保证参数类型仅解析一次（并发安全）
-	isInstance bool           // 是否为实例注册（true时直接使用instance，不调用ctor）
+	implType   reflect.Type   // Service implementation type (constructor return value or instance type)
+	scope      LifetimeScope  // Lifetime scope
+	instance   reflect.Value  // Singleton instance cache or pre-registered instance
+	ctor       reflect.Value  // Constructor reflection value (empty for instance registration)
+	ctorType   reflect.Type   // Constructor reflection type (empty for instance registration)
+	once       sync.Once      // Atomic operation for singleton instance initialization
+	paramTypes []reflect.Type // Cached constructor parameter types (core optimization)
+	paramOnce  sync.Once      // Ensures parameter types are parsed only once (concurrency-safe)
+	isInstance bool           // Whether this is an instance registration (if true, use instance directly without calling ctor)
 }
 
-// Container DI容器核心：管理所有服务，保证并发安全
+// Container DI container core: manages all services with concurrency safety
 type Container struct {
-	services      map[reflect.Type]*ServiceDef            // 默认（无名）服务
-	namedServices map[string]map[reflect.Type]*ServiceDef // 命名服务：name -> type -> ServiceDef
+	services      map[reflect.Type]*ServiceDef            // Default (unnamed) services
+	namedServices map[string]map[reflect.Type]*ServiceDef // Named services: name -> type -> ServiceDef
 	mu            sync.RWMutex
 }
 
-// Scope 同一个Scope内Scoped实例唯一，不同Scope相互隔离
+// Scope Within the same Scope, Scoped instances are unique; different Scopes are isolated from each other
 type Scope struct {
-	root       *Container                     // 关联根容器（共享注册元信息）
-	scopedInst map[reflect.Type]reflect.Value // 本作用域 Scoped 实例缓存
-	mu         sync.RWMutex                   // 作用域并发安全锁
+	root       *Container                     // Associated root container (shares registration metadata)
+	scopedInst map[reflect.Type]reflect.Value // Scoped instance cache for this scope
+	mu         sync.RWMutex                   // Scope concurrency-safe lock
 }
 
-// NewContainer 创建新的DI容器
+// NewContainer Creates a new DI container
 func NewContainer() *Container {
 	return &Container{
 		services:      make(map[reflect.Type]*ServiceDef),
@@ -41,80 +41,80 @@ func NewContainer() *Container {
 	}
 }
 
-// Global 全局容器：供单服务架构直接使用，省去手动创建容器
+// Global container: for single-service architecture, eliminates manual container creation
 var Global = NewContainer()
 
-// Register 基础注册：按构造函数返回值类型注册，返回错误（需手动处理）
+// Register Basic registration: registers by constructor return value type, returns error (requires manual handling)
 func (c *Container) Register(ctor any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.register(ctor, nil, scope)
 }
 
-// RegisterAs 接口注册：将实现类型注册为指定接口类型，返回错误（需手动处理）
+// RegisterAs Interface registration: registers implementation type as specified interface type, returns error (requires manual handling)
 func (c *Container) RegisterAs(ctor any, interfaceType any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.register(ctor, interfaceType, scope)
 }
 
-// register 内部通用注册逻辑，抽离重复代码
+// register Internal common registration logic, extracts duplicate code
 func (c *Container) register(ctor any, interfaceType any, scope LifetimeScope) error {
-	// 解析构造函数反射信息
+	// Parse constructor reflection information
 	ctorVal := reflect.ValueOf(ctor)
 	ctorType := ctorVal.Type()
 	if ctorType.Kind() != reflect.Func {
 		return ErrNotFunc
 	}
 
-	// 校验构造函数返回值：仅1个返回值，且为具体类型
+	// Validate constructor return value: only 1 return value, and must be concrete type
 	numOut := ctorType.NumOut()
 	if numOut != 1 {
-		return fmt.Errorf("%w，当前返回值数量：%d", ErrNoReturn, numOut)
+		return fmt.Errorf("%w, current return value count: %d", ErrNoReturn, numOut)
 	}
 	implType := ctorType.Out(0)
 	if implType.Kind() == reflect.Interface {
-		return fmt.Errorf("%w，返回值为接口：%s", ErrNotConcreteType, implType)
+		return fmt.Errorf("%w, return value is interface: %s", ErrNotConcreteType, implType)
 	}
 
-	// 确定最终注册的服务类型（接口/实现类型）
+	// Determine final registered service type (interface/implementation type)
 	svcType := implType
 	if interfaceType != nil {
-		// 解析目标类型
+		// Parse target type
 		targetType := reflect.TypeOf(interfaceType)
 
-		// 检查是否是指针类型
+		// Check if it's a pointer type
 		if targetType.Kind() != reflect.Ptr {
 			return ErrInvalidInterfaceType
 		}
 
-		// 获取指针指向的元素类型
+		// Get the element type pointed to by the pointer
 		elemType := targetType.Elem()
 
-		// 判断是指向接口还是具体类型
+		// Determine if it points to an interface or concrete type
 		if elemType.Kind() == reflect.Interface {
-			// 接口类型：使用接口类型作为服务类型
+			// Interface type: use interface type as service type
 			svcType = elemType
 			if !implType.Implements(svcType) {
-				return fmt.Errorf("类型%s未实现接口%s", implType, svcType)
+				return fmt.Errorf("type %s does not implement interface %s", implType, svcType)
 			}
 		} else {
-			// 具体类型：使用完整的指针类型作为服务类型
-			// 例如：(*UserService)(nil) -> 注册为 *UserService 类型
+			// Concrete type: use complete pointer type as service type
+			// Example: (*UserService)(nil) -> register as *UserService type
 			svcType = targetType
-			// 增强类型兼容性检查，支持指针/值类型转换
+			// Enhanced type compatibility check, supports pointer/value type conversion
 			if !isTypeCompatible(implType, svcType) {
-				return fmt.Errorf("类型%s无法转换为目标类型%s", implType, svcType)
+				return fmt.Errorf("type %s cannot be converted to target type %s", implType, svcType)
 			}
 		}
 	}
 
-	// 检查重复注册
+	// Check for duplicate registration
 	if _, exists := c.services[svcType]; exists {
-		return fmt.Errorf("%w，类型：%s", ErrRegisterDuplicate, svcType)
+		return fmt.Errorf("%w, type: %s", ErrRegisterDuplicate, svcType)
 	}
 
-	// 封装服务定义并加入容器
+	// Encapsulate service definition and add to container
 	c.services[svcType] = &ServiceDef{
 		implType:   implType,
 		scope:      scope,
@@ -125,30 +125,30 @@ func (c *Container) register(ctor any, interfaceType any, scope LifetimeScope) e
 	return nil
 }
 
-// RegisterInstance 实例注册：直接注册已创建的实例，按实例类型注册
-// 注意：不支持Transient生命周期（实例已创建，无法每次返回新实例）
+// RegisterInstance Instance registration: directly registers a created instance, registers by instance type
+// Note: Does not support Transient lifetime (instance already created, cannot return new instance each time)
 func (c *Container) RegisterInstance(instance any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.registerInstance(instance, nil, scope)
 }
 
-// RegisterInstanceAs 实例接口注册：将已创建的实例注册为指定接口类型
-// 注意：不支持Transient生命周期（实例已创建，无法每次返回新实例）
+// RegisterInstanceAs Instance interface registration: registers a created instance as specified interface type
+// Note: Does not support Transient lifetime (instance already created, cannot return new instance each time)
 func (c *Container) RegisterInstanceAs(instance any, interfaceType any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.registerInstance(instance, interfaceType, scope)
 }
 
-// registerInstance 内部实例注册逻辑
+// registerInstance Internal instance registration logic
 func (c *Container) registerInstance(instance any, interfaceType any, scope LifetimeScope) error {
-	// Transient不支持实例注册（无法每次创建新实例）
+	// Transient does not support instance registration (cannot create new instance each time)
 	if scope == Transient {
 		return ErrTransientInstance
 	}
 
-	// 校验实例不为 nil
+	// Validate instance is not nil
 	if instance == nil {
 		return ErrNilInstance
 	}
@@ -156,44 +156,44 @@ func (c *Container) registerInstance(instance any, interfaceType any, scope Life
 	instVal := reflect.ValueOf(instance)
 	implType := instVal.Type()
 
-	// 确定最终注册的服务类型（接口/实现类型）
+	// Determine final registered service type (interface/implementation type)
 	svcType := implType
 	if interfaceType != nil {
-		// 解析目标类型
+		// Parse target type
 		targetType := reflect.TypeOf(interfaceType)
 
-		// 检查是否是指针类型
+		// Check if it's a pointer type
 		if targetType.Kind() != reflect.Ptr {
 			return ErrInvalidInterfaceType
 		}
 
-		// 获取指针指向的元素类型
+		// Get the element type pointed to by the pointer
 		elemType := targetType.Elem()
 
-		// 判断是指向接口还是具体类型
+		// Determine if it points to an interface or concrete type
 		if elemType.Kind() == reflect.Interface {
-			// 接口类型：使用接口类型作为服务类型
+			// Interface type: use interface type as service type
 			svcType = elemType
 			if !implType.Implements(svcType) {
-				return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+				return fmt.Errorf("instance type %s does not implement interface %s", implType, svcType)
 			}
 		} else {
-			// 具体类型：使用完整的指针类型作为服务类型
-			// 例如：(*UserService)(nil) -> 注册为 *UserService 类型
+			// Concrete type: use complete pointer type as service type
+			// Example: (*UserService)(nil) -> register as *UserService type
 			svcType = targetType
-			// 增强类型兼容性检查，支持指针/值类型转换
+			// Enhanced type compatibility check, supports pointer/value type conversion
 			if !isTypeCompatible(implType, svcType) {
-				return fmt.Errorf("实例类型%s无法转换为目标类型%s", implType, svcType)
+				return fmt.Errorf("instance type %s cannot be converted to target type %s", implType, svcType)
 			}
 		}
 	}
 
-	// 检查重复注册
+	// Check for duplicate registration
 	if _, exists := c.services[svcType]; exists {
-		return fmt.Errorf("%w，类型：%s", ErrRegisterDuplicate, svcType)
+		return fmt.Errorf("%w, type: %s", ErrRegisterDuplicate, svcType)
 	}
 
-	// 封装服务定义并加入容器
+	// Encapsulate service definition and add to container
 	c.services[svcType] = &ServiceDef{
 		implType:   implType,
 		scope:      scope,
@@ -203,41 +203,41 @@ func (c *Container) registerInstance(instance any, interfaceType any, scope Life
 	return nil
 }
 
-// RegisterInstanceNamed 命名实例注册：注册带名称的实例，允许同一类型多个实例
+// RegisterInstanceNamed Named instance registration: registers an instance with a name, allows multiple instances of the same type
 func (c *Container) RegisterInstanceNamed(name string, instance any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.registerInstanceNamed(name, instance, nil, scope)
 }
 
-// RegisterInstanceAsNamed 命名实例接口注册：注册带名称的实例为指定类型
+// RegisterInstanceAsNamed Named instance interface registration: registers an instance with a name as specified type
 func (c *Container) RegisterInstanceAsNamed(name string, instance any, interfaceType any, scope LifetimeScope) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.registerInstanceNamed(name, instance, interfaceType, scope)
 }
 
-// registerInstanceNamed 内部命名实例注册逻辑
+// registerInstanceNamed Internal named instance registration logic
 func (c *Container) registerInstanceNamed(name string, instance any, interfaceType any, scope LifetimeScope) error {
-	// Transient不支持实例注册
+	// Transient does not support instance registration
 	if scope == Transient {
 		return ErrTransientInstance
 	}
 
-	// 校验实例不为 nil
+	// Validate instance is not nil
 	if instance == nil {
 		return ErrNilInstance
 	}
 
-	// 校验名称不为空
+	// Validate name is not empty
 	if name == "" {
-		return fmt.Errorf("命名注册的名称不能为空")
+		return fmt.Errorf("name cannot be empty for named registration")
 	}
 
 	instVal := reflect.ValueOf(instance)
 	implType := instVal.Type()
 
-	// 确定最终注册的服务类型
+	// Determine final registered service type
 	svcType := implType
 	if interfaceType != nil {
 		targetType := reflect.TypeOf(interfaceType)
@@ -249,27 +249,27 @@ func (c *Container) registerInstanceNamed(name string, instance any, interfaceTy
 		if elemType.Kind() == reflect.Interface {
 			svcType = elemType
 			if !implType.Implements(svcType) {
-				return fmt.Errorf("实例类型%s未实现接口%s", implType, svcType)
+				return fmt.Errorf("instance type %s does not implement interface %s", implType, svcType)
 			}
 		} else {
 			svcType = targetType
 			if !isTypeCompatible(implType, svcType) {
-				return fmt.Errorf("实例类型%s无法转换为目标类型%s", implType, svcType)
+				return fmt.Errorf("instance type %s cannot be converted to target type %s", implType, svcType)
 			}
 		}
 	}
 
-	// 初始化命名服务map
+	// Initialize named services map
 	if c.namedServices[name] == nil {
 		c.namedServices[name] = make(map[reflect.Type]*ServiceDef)
 	}
 
-	// 检查重复注册
+	// Check for duplicate registration
 	if _, exists := c.namedServices[name][svcType]; exists {
-		return fmt.Errorf("%w，名称：%s，类型：%s", ErrRegisterDuplicate, name, svcType)
+		return fmt.Errorf("%w, name: %s, type: %s", ErrRegisterDuplicate, name, svcType)
 	}
 
-	// 封装服务定义并加入容器
+	// Encapsulate service definition and add to container
 	c.namedServices[name][svcType] = &ServiceDef{
 		implType:   implType,
 		scope:      scope,
@@ -279,24 +279,24 @@ func (c *Container) registerInstanceNamed(name string, instance any, interfaceTy
 	return nil
 }
 
-// isTypeCompatible 检查两种类型是否兼容（支持指针/值类型转换）
+// isTypeCompatible Checks if two types are compatible (supports pointer/value type conversion)
 func isTypeCompatible(implType, targetType reflect.Type) bool {
-	// 直接可分配（包括相同类型）
+	// Directly assignable (including same type)
 	if implType.AssignableTo(targetType) {
 		return true
 	}
 
-	// 可转换
+	// Convertible
 	if implType.ConvertibleTo(targetType) {
 		return true
 	}
 
-	// 检查指针类型兼容性：如果实现是值类型，目标是对应指针类型
+	// Check pointer type compatibility: if implementation is value type, target is corresponding pointer type
 	if implType.Kind() != reflect.Ptr && reflect.PointerTo(implType).AssignableTo(targetType) {
 		return true
 	}
 
-	// 检查反向指针类型兼容性：如果实现是指针类型，目标是对应值类型
+	// Check reverse pointer type compatibility: if implementation is pointer type, target is corresponding value type
 	if implType.Kind() == reflect.Ptr && implType.Elem().AssignableTo(targetType) {
 		return true
 	}
@@ -304,7 +304,7 @@ func isTypeCompatible(implType, targetType reflect.Type) bool {
 	return false
 }
 
-// Resolve 原始解析：通过指针接收实例，返回错误（兼容旧逻辑）
+// Resolve Original resolution: receives instance through pointer, returns error (compatible with old logic)
 func (c *Container) Resolve(out any) error {
 	outVal := reflect.ValueOf(out)
 	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
@@ -319,7 +319,7 @@ func (c *Container) Resolve(out any) error {
 	return nil
 }
 
-// ResolveNamed 命名解析：通过名称解析特定的服务实例
+// ResolveNamed Named resolution: resolves specific service instance by name
 func (c *Container) ResolveNamed(name string, out any) error {
 	outVal := reflect.ValueOf(out)
 	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
@@ -331,54 +331,54 @@ func (c *Container) ResolveNamed(name string, out any) error {
 	namedMap, exists := c.namedServices[name]
 	if !exists {
 		c.mu.RUnlock()
-		return fmt.Errorf("命名服务不存在，名称：%s", name)
+		return fmt.Errorf("named service does not exist, name: %s", name)
 	}
 	serviceDef, exists := namedMap[svcType]
 	c.mu.RUnlock()
 
 	if !exists {
-		return fmt.Errorf("%w，名称：%s，类型：%s", ErrServiceNotRegistered, name, svcType)
+		return fmt.Errorf("%w, name: %s, type: %s", ErrServiceNotRegistered, name, svcType)
 	}
 
-	// 命名服务目前只支持实例注册，直接返回实例
+	// Named services currently only support instance registration, return instance directly
 	if serviceDef.isInstance {
 		outVal.Elem().Set(serviceDef.instance)
 		return nil
 	}
 
-	return fmt.Errorf("命名服务暂不支持构造函数注册，名称：%s", name)
+	return fmt.Errorf("named services do not support constructor registration yet, name: %s", name)
 }
 
-// ResolveAll 解析所有同类型的服务（包括默认和所有命名服务）
+// ResolveAll Resolves all services of the same type (including default and all named services)
 func (c *Container) ResolveAll(out any) error {
 	outVal := reflect.ValueOf(out)
 	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
 		return ErrInvalidOutPtr
 	}
 
-	// 检查输出类型必须是切片指针
+	// Check output type must be a slice pointer
 	elemType := outVal.Elem().Type()
 	if elemType.Kind() != reflect.Slice {
-		return fmt.Errorf("ResolveAll 的输出参数必须是切片指针，当前类型：%s", elemType)
+		return fmt.Errorf("ResolveAll output parameter must be a slice pointer, current type: %s", elemType)
 	}
 
-	// 获取切片元素类型
+	// Get slice element type
 	itemType := elemType.Elem()
 
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	// 创建结果切片
+	// Create result slice
 	results := reflect.MakeSlice(elemType, 0, 0)
 
-	// 添加默认服务（如果存在）
+	// Add default service (if exists)
 	if serviceDef, exists := c.services[itemType]; exists {
 		if serviceDef.isInstance {
 			results = reflect.Append(results, serviceDef.instance)
 		}
 	}
 
-	// 添加所有命名服务
+	// Add all named services
 	for _, namedMap := range c.namedServices {
 		if serviceDef, exists := namedMap[itemType]; exists {
 			if serviceDef.isInstance {
@@ -387,44 +387,44 @@ func (c *Container) ResolveAll(out any) error {
 		}
 	}
 
-	// 设置结果
+	// Set result
 	outVal.Elem().Set(results)
 	return nil
 }
 
-// resolve 内部递归解析核心方法：处理依赖、缓存、生命周期（原有逻辑新增Scoped校验）
+// resolve Internal recursive resolution core method: handles dependencies, caching, lifetime (original logic with added Scoped validation)
 func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (reflect.Value, error) {
-	// 读锁获取服务定义，避免写阻塞
+	// Read lock to get service definition, avoid write blocking
 	c.mu.RLock()
 	serviceDef, exists := c.services[svcType]
 	c.mu.RUnlock()
 	if !exists {
-		return reflect.Value{}, fmt.Errorf("%w，类型：%s", ErrServiceNotRegistered, svcType)
+		return reflect.Value{}, fmt.Errorf("%w, type: %s", ErrServiceNotRegistered, svcType)
 	}
 
-	// 循环依赖检测
+	// Circular dependency detection
 	if track[svcType] {
-		return reflect.Value{}, fmt.Errorf("%w，循环依赖链包含：%s", ErrResolveCircularDependency, svcType)
+		return reflect.Value{}, fmt.Errorf("%w, circular dependency chain contains: %s", ErrResolveCircularDependency, svcType)
 	}
 	track[svcType] = true
 	defer delete(track, svcType)
 
-	// 新增：Scoped禁止根容器直接解析，强制使用作用域
+	// New: Scoped prohibits direct resolution from root container, must use scope
 	if serviceDef.scope == Scoped {
 		return reflect.Value{}, ErrScopedOnRootContainer
 	}
 
-	// 实例注册：直接返回预注册的实例（Singleton/Scoped）
+	// Instance registration: directly return pre-registered instance (Singleton/Scoped)
 	if serviceDef.isInstance {
 		return serviceDef.instance, nil
 	}
 
-	// 单例：已有实例直接返回
+	// Singleton: return existing instance directly
 	if serviceDef.scope == Singleton && serviceDef.instance.IsValid() {
 		return serviceDef.instance, nil
 	}
 
-	// 核心优化：缓存构造函数参数类型，仅首次解析
+	// Core optimization: cache constructor parameter types, parse only on first resolution
 	serviceDef.paramOnce.Do(func() {
 		numIn := serviceDef.ctorType.NumIn()
 		params := make([]reflect.Type, numIn)
@@ -435,35 +435,35 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 	})
 	paramTypes := serviceDef.paramTypes
 
-	// 递归解析所有依赖参数
+	// Recursively resolve all dependency parameters
 	params := make([]reflect.Value, len(paramTypes))
 	for i, pType := range paramTypes {
-		// 检查参数是否为切片类型
+		// Check if parameter is a slice type
 		if pType.Kind() == reflect.Slice {
-			// 首先尝试直接解析切片类型（如果已注册）
+			// First try to resolve slice type directly (if registered)
 			c.mu.RLock()
 			_, sliceExists := c.services[pType]
 			c.mu.RUnlock()
 
 			if sliceExists {
-				// 切片类型已注册，直接解析
+				// Slice type is registered, resolve directly
 				pInstance, err := c.resolve(pType, track)
 				if err != nil {
-					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+					return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 				}
 				params[i] = pInstance
 			} else {
-				// 切片类型未注册：自动收集所有该元素类型的实例
+				// Slice type not registered: automatically collect all instances of that element type
 				elemType := pType.Elem()
 
-				// 创建结果切片
+				// Create result slice
 				results := reflect.MakeSlice(pType, 0, 0)
 
-				// 添加默认服务（如果存在）
+				// Add default service (if exists)
 				c.mu.RLock()
 				if _, exists := c.services[elemType]; exists {
 					c.mu.RUnlock()
-					// 递归解析默认实例
+					// Recursively resolve default instance
 					inst, err := c.resolve(elemType, track)
 					if err == nil {
 						results = reflect.Append(results, inst)
@@ -472,7 +472,7 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 					c.mu.RUnlock()
 				}
 
-				// 添加所有命名服务
+				// Add all named services
 				c.mu.RLock()
 				for _, namedMap := range c.namedServices {
 					if namedServiceDef, exists := namedMap[elemType]; exists {
@@ -486,27 +486,27 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 				params[i] = results
 			}
 		} else if pType.Kind() == reflect.Map && pType.Key().Kind() == reflect.String {
-			// 检查参数是否为 map[string]T 类型
-			// 首先尝试直接解析 map 类型（如果已注册）
+			// Check if parameter is map[string]T type
+			// First try to resolve map type directly (if registered)
 			c.mu.RLock()
 			_, mapExists := c.services[pType]
 			c.mu.RUnlock()
 
 			if mapExists {
-				// map 类型已注册，直接解析
+				// map type is registered, resolve directly
 				pInstance, err := c.resolve(pType, track)
 				if err != nil {
-					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+					return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 				}
 				params[i] = pInstance
 			} else {
-				// map 类型未注册：自动收集所有命名注册的实例
+				// map type not registered: automatically collect all named registered instances
 				valueType := pType.Elem()
 
-				// 创建结果 map
+				// Create result map
 				results := reflect.MakeMap(pType)
 
-				// 收集所有命名服务
+				// Collect all named services
 				c.mu.RLock()
 				for name, namedMap := range c.namedServices {
 					if namedServiceDef, exists := namedMap[valueType]; exists {
@@ -521,23 +521,23 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 				params[i] = results
 			}
 		} else {
-			// 非切片/map类型：正常解析
+			// Non-slice/map type: normal resolution
 			pInstance, err := c.resolve(pType, track)
 			if err != nil {
-				return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 			}
 			params[i] = pInstance
 		}
 	}
 
-	// 调用构造函数创建实例
+	// Call constructor to create instance
 	results := serviceDef.ctor.Call(params)
 	if len(results) != 1 {
-		return reflect.Value{}, fmt.Errorf("%w，构造函数调用返回值异常", ErrCreateInstanceFailed)
+		return reflect.Value{}, fmt.Errorf("%w, constructor call returned abnormal value", ErrCreateInstanceFailed)
 	}
 	instance := results[0]
 
-	// 单例：原子操作缓存实例，保证仅创建一次
+	// Singleton: atomic operation to cache instance, ensure created only once
 	if serviceDef.scope == Singleton {
 		serviceDef.once.Do(func() {
 			serviceDef.instance = instance
@@ -547,7 +547,7 @@ func (c *Container) resolve(svcType reflect.Type, track map[reflect.Type]bool) (
 	return instance, nil
 }
 
-// NewScope 新增：Container创建作用域方法（根容器专属，创建Scoped作用域）
+// NewScope New: Container creates scope method (root container exclusive, creates Scoped scope)
 func (c *Container) NewScope() *Scope {
 	return &Scope{
 		root:       c,
@@ -555,7 +555,7 @@ func (c *Container) NewScope() *Scope {
 	}
 }
 
-// Resolve 新增：Scope的Resolve方法（与Container的Resolve格式一致，支持Scoped）
+// Resolve New: Scope's Resolve method (consistent format with Container's Resolve, supports Scoped)
 func (s *Scope) Resolve(out any) error {
 	outVal := reflect.ValueOf(out)
 	if outVal.Kind() != reflect.Ptr || outVal.IsNil() {
@@ -570,30 +570,30 @@ func (s *Scope) Resolve(out any) error {
 	return nil
 }
 
-// 新增：Scope的内部解析方法（处理所有生命周期，核心Scoped缓存逻辑）
+// New: Scope's internal resolution method (handles all lifetimes, core Scoped caching logic)
 func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (reflect.Value, error) {
-	// 从根容器获取注册元信息（所有作用域共享）
+	// Get registration metadata from root container (shared by all scopes)
 	s.root.mu.RLock()
 	serviceDef, exists := s.root.services[svcType]
 	s.root.mu.RUnlock()
 	if !exists {
-		return reflect.Value{}, fmt.Errorf("%w，类型：%s", ErrServiceNotRegistered, svcType)
+		return reflect.Value{}, fmt.Errorf("%w, type: %s", ErrServiceNotRegistered, svcType)
 	}
 
-	// 循环依赖检测
+	// Circular dependency detection
 	if track[svcType] {
-		return reflect.Value{}, fmt.Errorf("%w，循环依赖链包含：%s", ErrResolveCircularDependency, svcType)
+		return reflect.Value{}, fmt.Errorf("%w, circular dependency chain contains: %s", ErrResolveCircularDependency, svcType)
 	}
 	track[svcType] = true
 	defer delete(track, svcType)
 
-	// 实例注册处理
+	// Instance registration handling
 	if serviceDef.isInstance {
-		// Singleton实例：直接返回根容器的实例
+		// Singleton instance: directly return root container's instance
 		if serviceDef.scope == Singleton {
 			return serviceDef.instance, nil
 		}
-		// Scoped实例：每个作用域独立缓存
+		// Scoped instance: each scope has independent cache
 		if serviceDef.scope == Scoped {
 			s.mu.RLock()
 			inst, exists := s.scopedInst[svcType]
@@ -601,7 +601,7 @@ func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (refl
 			if exists && inst.IsValid() {
 				return inst, nil
 			}
-			// 首次访问：缓存实例到作用域
+			// First access: cache instance to scope
 			s.mu.Lock()
 			s.scopedInst[svcType] = serviceDef.instance
 			s.mu.Unlock()
@@ -609,9 +609,9 @@ func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (refl
 		}
 	}
 
-	// 1. 单例：修复循环依赖 → 优先从根容器取缓存，未初始化则用作用域自身resolve解析（复用track）
+	// 1. Singleton: fix circular dependency → prioritize getting cache from root container, if not initialized use scope's own resolve (reuse track)
 	if serviceDef.scope == Singleton {
-		// 读锁获取根容器的单例实例，已缓存则直接返回（核心：跳过根容器resolve，避免track重复写入）
+		// Read lock to get root container's singleton instance, return directly if cached (core: skip root container resolve, avoid duplicate track writes)
 		s.root.mu.RLock()
 		if serviceDef.instance.IsValid() {
 			inst := serviceDef.instance
@@ -619,11 +619,11 @@ func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (refl
 			return inst, nil
 		}
 		s.root.mu.RUnlock()
-		// 单例未初始化：用作用域自身resolve完成初始化（复用当前track，无循环依赖误判）
+		// Singleton not initialized: use scope's own resolve to complete initialization (reuse current track, no circular dependency false positive)
 		goto createInstance
 	}
 
-	// 2. Scoped：作用域内唯一，先查本作用域缓存
+	// 2. Scoped: unique within scope, check this scope's cache first
 	if serviceDef.scope == Scoped {
 		s.mu.RLock()
 		inst, exists := s.scopedInst[svcType]
@@ -633,9 +633,9 @@ func (s *Scope) resolve(svcType reflect.Type, track map[reflect.Type]bool) (refl
 		}
 	}
 
-	// 新增标签：统一创建实例（Scoped/Transient/未初始化的Singleton共用）
+	// New label: unified instance creation (Scoped/Transient/uninitialized Singleton shared)
 createInstance:
-	// 缓存未命中：解析参数+创建实例（Scoped/Transient/未初始化Singleton通用）
+	// Cache miss: resolve parameters + create instance (Scoped/Transient/uninitialized Singleton common)
 	serviceDef.paramOnce.Do(func() {
 		numIn := serviceDef.ctorType.NumIn()
 		params := make([]reflect.Type, numIn)
@@ -648,32 +648,32 @@ createInstance:
 
 	params := make([]reflect.Value, len(paramTypes))
 	for i, pType := range paramTypes {
-		// 检查参数是否为切片类型
+		// Check if parameter is a slice type
 		if pType.Kind() == reflect.Slice {
-			// 首先尝试直接解析切片类型（如果已注册）
+			// First try to resolve slice type directly (if registered)
 			s.root.mu.RLock()
 			_, sliceExists := s.root.services[pType]
 			s.root.mu.RUnlock()
 
 			if sliceExists {
-				// 切片类型已注册，直接解析
+				// Slice type is registered, resolve directly
 				pInstance, err := s.resolve(pType, track)
 				if err != nil {
-					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+					return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 				}
 				params[i] = pInstance
 			} else {
-				// 切片类型未注册：自动收集所有该元素类型的实例
+				// Slice type not registered: automatically collect all instances of that element type
 				elemType := pType.Elem()
 
-				// 创建结果切片
+				// Create result slice
 				results := reflect.MakeSlice(pType, 0, 0)
 
-				// 添加默认服务（如果存在）
+				// Add default service (if exists)
 				s.root.mu.RLock()
 				if _, exists := s.root.services[elemType]; exists {
 					s.root.mu.RUnlock()
-					// 递归解析默认实例
+					// Recursively resolve default instance
 					inst, err := s.resolve(elemType, track)
 					if err == nil {
 						results = reflect.Append(results, inst)
@@ -682,7 +682,7 @@ createInstance:
 					s.root.mu.RUnlock()
 				}
 
-				// 添加所有命名服务
+				// Add all named services
 				s.root.mu.RLock()
 				for _, namedMap := range s.root.namedServices {
 					if namedServiceDef, exists := namedMap[elemType]; exists {
@@ -696,27 +696,27 @@ createInstance:
 				params[i] = results
 			}
 		} else if pType.Kind() == reflect.Map && pType.Key().Kind() == reflect.String {
-			// 检查参数是否为 map[string]T 类型
-			// 首先尝试直接解析 map 类型（如果已注册）
+			// Check if parameter is map[string]T type
+			// First try to resolve map type directly (if registered)
 			s.root.mu.RLock()
 			_, mapExists := s.root.services[pType]
 			s.root.mu.RUnlock()
 
 			if mapExists {
-				// map 类型已注册，直接解析
+				// map type is registered, resolve directly
 				pInstance, err := s.resolve(pType, track)
 				if err != nil {
-					return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+					return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 				}
 				params[i] = pInstance
 			} else {
-				// map 类型未注册：自动收集所有命名注册的实例
+				// map type not registered: automatically collect all named registered instances
 				valueType := pType.Elem()
 
-				// 创建结果 map
+				// Create result map
 				results := reflect.MakeMap(pType)
 
-				// 收集所有命名服务
+				// Collect all named services
 				s.root.mu.RLock()
 				for name, namedMap := range s.root.namedServices {
 					if namedServiceDef, exists := namedMap[valueType]; exists {
@@ -731,10 +731,10 @@ createInstance:
 				params[i] = results
 			}
 		} else {
-			// 非切片/map类型：正常解析
+			// Non-slice/map type: normal resolution
 			pInstance, err := s.resolve(pType, track)
 			if err != nil {
-				return reflect.Value{}, fmt.Errorf("解析依赖%s失败：%w", pType, err)
+				return reflect.Value{}, fmt.Errorf("failed to resolve dependency %s: %w", pType, err)
 			}
 			params[i] = pInstance
 		}
@@ -742,18 +742,18 @@ createInstance:
 
 	results := serviceDef.ctor.Call(params)
 	if len(results) != 1 {
-		return reflect.Value{}, fmt.Errorf("%w，构造函数调用返回值异常", ErrCreateInstanceFailed)
+		return reflect.Value{}, fmt.Errorf("%w, constructor call returned abnormal value", ErrCreateInstanceFailed)
 	}
 	instance := results[0]
 
-	// 3. Scoped：将实例写入本作用域缓存
+	// 3. Scoped: write instance to this scope's cache
 	if serviceDef.scope == Scoped {
 		s.mu.Lock()
 		s.scopedInst[svcType] = instance
 		s.mu.Unlock()
 	}
 
-	// 新增：未初始化的Singleton，创建后写入根容器缓存（保证全局唯一）
+	// New: uninitialized Singleton, write to root container cache after creation (ensure global uniqueness)
 	if serviceDef.scope == Singleton {
 		serviceDef.once.Do(func() {
 			s.root.mu.Lock()
@@ -762,38 +762,38 @@ createInstance:
 		})
 	}
 
-	// 4. Transient：直接返回，不缓存
+	// 4. Transient: return directly, no caching
 	return instance, nil
 }
 
-// getTyped 内部泛型解析：将反射获取的实例转换为目标类型T
+// getTyped Internal generic resolution: converts reflection-obtained instance to target type T
 func getTyped[T any](_ *Container, svcType reflect.Type, instance reflect.Value) (T, error) {
 	var zero T
-	// 处理接口类型、可赋值以及可转换类型
+	// Handle interface types, assignable and convertible types
 	it := instance.Type()
-	// 如果目标类型是接口，检查实现关系
+	// If target type is interface, check implementation relationship
 	if svcType.Kind() == reflect.Interface {
-		// 情况1：实例类型直接实现接口（包括指针类型）
+		// Case 1: Instance type directly implements interface (including pointer types)
 		if it.Implements(svcType) {
 			return instance.Interface().(T), nil
 		}
-		// 情况2：值类型实现接口，但容器返回的是值 → 尝试取地址
+		// Case 2: Value type implements interface, but container returns value → try to get address
 		if it.Kind() != reflect.Ptr && reflect.PointerTo(it).Implements(svcType) {
 			var iface any
 			if instance.CanAddr() {
 				iface = instance.Addr().Interface()
 			} else {
-				// 创建一个新的指针并设置值以便转换
+				// Create a new pointer and set value for conversion
 				ptr := reflect.New(it)
 				ptr.Elem().Set(instance)
 				iface = ptr.Interface()
 			}
 			return iface.(T), nil
 		}
-		return zero, fmt.Errorf("【%w】实例%s无法转换为目标接口类型%s", ErrTypeConvertFailed, it, svcType)
+		return zero, fmt.Errorf("[%w] instance %s cannot be converted to target interface type %s", ErrTypeConvertFailed, it, svcType)
 	}
 
-	// 目标不是接口：检查是否可直接赋值或可转换
+	// Target is not interface: check if directly assignable or convertible
 	if it.AssignableTo(svcType) {
 		return instance.Interface().(T), nil
 	}
@@ -802,81 +802,81 @@ func getTyped[T any](_ *Container, svcType reflect.Type, instance reflect.Value)
 		return conv.Interface().(T), nil
 	}
 
-	return zero, fmt.Errorf("【%w】实例%s无法转换为目标类型%s", ErrTypeConvertFailed, it, svcType)
+	return zero, fmt.Errorf("[%w] instance %s cannot be converted to target type %s", ErrTypeConvertFailed, it, svcType)
 }
 
-// MustRegister ---------------------- 便捷Must系列方法（出错Panic，90%场景首选） ----------------------
-// MustRegister 便捷基础注册：出错直接Panic
+// MustRegister ---------------------- Convenient Must series methods (panic on error, preferred for 90% scenarios) ----------------------
+// MustRegister Convenient basic registration: panics directly on error
 func (c *Container) MustRegister(ctor any, scope LifetimeScope) {
 	if err := c.Register(ctor, scope); err != nil {
-		panic(fmt.Sprintf("【DI注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Registration Failed] %v", err))
 	}
 }
 
-// MustRegisterAs 便捷接口注册：出错直接Panic
+// MustRegisterAs Convenient interface registration: panics directly on error
 func (c *Container) MustRegisterAs(ctor any, interfaceType any, scope LifetimeScope) {
 	if err := c.RegisterAs(ctor, interfaceType, scope); err != nil {
-		panic(fmt.Sprintf("【DI接口注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Interface Registration Failed] %v", err))
 	}
 }
 
-// MustRegisterInstance 便捷实例注册：出错直接Panic
+// MustRegisterInstance Convenient instance registration: panics directly on error
 func (c *Container) MustRegisterInstance(instance any, scope LifetimeScope) {
 	if err := c.RegisterInstance(instance, scope); err != nil {
-		panic(fmt.Sprintf("【DI实例注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Instance Registration Failed] %v", err))
 	}
 }
 
-// MustRegisterInstanceAs 便捷实例接口注册：出错直接Panic
+// MustRegisterInstanceAs Convenient instance interface registration: panics directly on error
 func (c *Container) MustRegisterInstanceAs(instance any, interfaceType any, scope LifetimeScope) {
 	if err := c.RegisterInstanceAs(instance, interfaceType, scope); err != nil {
-		panic(fmt.Sprintf("【DI实例接口注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Instance Interface Registration Failed] %v", err))
 	}
 }
 
-// MustRegisterInstanceNamed 便捷命名实例注册：出错直接Panic
+// MustRegisterInstanceNamed Convenient named instance registration: panics directly on error
 func (c *Container) MustRegisterInstanceNamed(name string, instance any, scope LifetimeScope) {
 	if err := c.RegisterInstanceNamed(name, instance, scope); err != nil {
-		panic(fmt.Sprintf("【DI命名实例注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Named Instance Registration Failed] %v", err))
 	}
 }
 
-// MustRegisterInstanceAsNamed 便捷命名实例接口注册：出错直接Panic
+// MustRegisterInstanceAsNamed Convenient named instance interface registration: panics directly on error
 func (c *Container) MustRegisterInstanceAsNamed(name string, instance any, interfaceType any, scope LifetimeScope) {
 	if err := c.RegisterInstanceAsNamed(name, instance, interfaceType, scope); err != nil {
-		panic(fmt.Sprintf("【DI命名实例接口注册失败】%v", err))
+		panic(fmt.Sprintf("[DI Named Instance Interface Registration Failed] %v", err))
 	}
 }
 
-// MustResolve 便捷原始解析：出错直接Panic
+// MustResolve Convenient original resolution: panics directly on error
 func (c *Container) MustResolve(out any) {
 	if err := c.Resolve(out); err != nil {
-		panic(fmt.Sprintf("【DI解析失败】%v", err))
+		panic(fmt.Sprintf("[DI Resolution Failed] %v", err))
 	}
 }
 
-// MustResolveNamed 便捷命名解析：出错直接Panic
+// MustResolveNamed Convenient named resolution: panics directly on error
 func (c *Container) MustResolveNamed(name string, out any) {
 	if err := c.ResolveNamed(name, out); err != nil {
-		panic(fmt.Sprintf("【DI命名解析失败】%v", err))
+		panic(fmt.Sprintf("[DI Named Resolution Failed] %v", err))
 	}
 }
 
-// MustResolveAll 便捷解析所有：出错直接Panic
+// MustResolveAll Convenient resolve all: panics directly on error
 func (c *Container) MustResolveAll(out any) {
 	if err := c.ResolveAll(out); err != nil {
-		panic(fmt.Sprintf("【DI解析所有失败】%v", err))
+		panic(fmt.Sprintf("[DI Resolve All Failed] %v", err))
 	}
 }
 
-// MustResolve 新增：Scope的MustResolve方法（与Container格式一致）
+// MustResolve New: Scope's MustResolve method (consistent format with Container)
 func (s *Scope) MustResolve(out any) {
 	if err := s.Resolve(out); err != nil {
-		panic(fmt.Sprintf("【DI作用域解析失败】%v", err))
+		panic(fmt.Sprintf("[DI Scope Resolution Failed] %v", err))
 	}
 }
 
-// MustRegister ---------------------- 全局容器顶层泛型函数（直接调用di.Get[T]()、di.MustGet[T]()，极致简洁） ----------------------
+// MustRegister ---------------------- Global container top-level generic functions (directly call di.Get[T](), di.MustGet[T](), extremely concise) ----------------------
 func MustRegister(ctor any, scope LifetimeScope) { Global.MustRegister(ctor, scope) }
 func MustRegisterAs(ctor any, iface any, scope LifetimeScope) {
 	Global.MustRegisterAs(ctor, iface, scope)
@@ -889,18 +889,18 @@ func MustRegisterInstanceAs(instance any, iface any, scope LifetimeScope) {
 }
 func MustResolve(out any) { Global.MustResolve(out) }
 
-// Get 泛型解析：直接返回实例，带错误处理（符合Go习惯）
+// Get Generic resolution: directly returns instance with error handling (follows Go conventions)
 func Get[T any]() (T, error) {
 	var zero T
 	svcType := reflect.TypeOf((*T)(nil)).Elem()
 	instance, err := Global.resolve(svcType, make(map[reflect.Type]bool))
 	if err != nil {
-		return zero, fmt.Errorf("【DI获取失败】%w", err)
+		return zero, fmt.Errorf("[DI Get Failed] %w", err)
 	}
 	return getTyped[T](Global, svcType, instance)
 }
 
-// MustGet 泛型便捷解析：直接返回实例，出错Panic（推荐使用）
+// MustGet Generic convenient resolution: directly returns instance, panics on error (recommended)
 func MustGet[T any]() T {
 	inst, err := Get[T]()
 	if err != nil {
@@ -909,23 +909,23 @@ func MustGet[T any]() T {
 	return inst
 }
 
-// GlobalNewScope 新增：全局创建作用域的便捷方法
+// GlobalNewScope New: convenient method for creating scope globally
 func GlobalNewScope() *Scope {
 	return Global.NewScope()
 }
 
-// ScopeGet 新增：作用域版泛型Get - 传入Scope指针，实现Scoped生命周期泛型解析
+// ScopeGet New: scope version generic Get - pass Scope pointer, implements Scoped lifetime generic resolution
 func ScopeGet[T any](s *Scope) (T, error) {
 	var zero T
 	svcType := reflect.TypeOf((*T)(nil)).Elem()
 	instance, err := s.resolve(svcType, make(map[reflect.Type]bool))
 	if err != nil {
-		return zero, fmt.Errorf("【DI作用域获取失败】%w", err)
+		return zero, fmt.Errorf("[DI Scope Get Failed] %w", err)
 	}
 	return getTyped[T](s.root, svcType, instance)
 }
 
-// ScopeMustGet 新增：作用域版泛型MustGet - 传入Scope指针，出错Panic（推荐使用）
+// ScopeMustGet New: scope version generic MustGet - pass Scope pointer, panics on error (recommended)
 func ScopeMustGet[T any](s *Scope) T {
 	inst, err := ScopeGet[T](s)
 	if err != nil {
@@ -934,19 +934,19 @@ func ScopeMustGet[T any](s *Scope) T {
 	return inst
 }
 
-// Reset 重置容器：清空所有服务和缓存（测试用）
+// Reset Resets container: clears all services and caches (for testing)
 func (c *Container) Reset() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.services = make(map[reflect.Type]*ServiceDef)
 }
 
-// Reset 替换为👇 修复后代码
+// Reset Replace with 👇 fixed code
 func (s *Scope) Reset() {
 	s.mu.Lock()
-	defer s.mu.Unlock() // 正确：使用作用域自身的锁
+	defer s.mu.Unlock() // Correct: use scope's own lock
 	s.scopedInst = make(map[reflect.Type]reflect.Value)
 }
 
-// GlobalReset 重置全局容器（测试用）
+// GlobalReset Resets global container (for testing)
 func GlobalReset() { Global.Reset() }

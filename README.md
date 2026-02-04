@@ -149,7 +149,7 @@ container.MustRegisterAs(NewUserService, (*UserService)(nil), di.Singleton)
 service := di.MustGet[*UserService]()
 ```
 
-> 详细说明请参考 [CONCRETE_TYPE_SUPPORT.md](CONCRETE_TYPE_SUPPORT.md)
+> 详细说明请参考 [CONCRETE_TYPE_SUPPORT.md](docs/CONCRETE_TYPE_SUPPORT.md)
 
 #### 3. 实例注册
 
@@ -189,7 +189,7 @@ container.MustResolveAll(&allDBs)
 fmt.Printf("Total databases: %d\n", len(allDBs)) // 输出: 2
 ```
 
-> 详细说明请参考 [NAMED_REGISTRATION.md](NAMED_REGISTRATION.md)
+> 详细说明请参考 [NAMED_REGISTRATION.md](docs/NAMED_REGISTRATION.md)
 
 #### 5. 切片自动注入 ⭐ 新功能
 
@@ -218,7 +218,7 @@ container.MustResolve(&manager)
 fmt.Printf("Total databases: %d\n", len(manager.Databases)) // 输出: 2
 ```
 
-> 详细说明请参考 [SLICE_AUTO_INJECTION.md](SLICE_AUTO_INJECTION.md)
+> 详细说明请参考 [SLICE_AUTO_INJECTION.md](docs/SLICE_AUTO_INJECTION.md)
 
 #### 6. Map 自动注入 ⭐ 新功能
 
@@ -248,7 +248,7 @@ fmt.Println(manager.Caches["redis"].Get("key")) // 通过名称访问
 fmt.Printf("Total caches: %d\n", len(manager.Caches)) // 输出: 2
 ```
 
-> 详细说明请参考 [MAP_AUTO_INJECTION.md](MAP_AUTO_INJECTION.md)
+> 详细说明请参考 [MAP_AUTO_INJECTION.md](docs/MAP_AUTO_INJECTION.md)
 
 ### 引用类型支持
 
@@ -431,8 +431,8 @@ go run example_demo.go
 
 ## 📚 文档
 
-- [完整特性文档](FEATURES.md) - 详细的 API 参考和使用指南
-- [实现总结](IMPLEMENTATION_SUMMARY.md) - 技术实现细节
+- [完整特性文档](docs/FEATURES.md) - 详细的 API 参考和使用指南
+- [实现总结](docs/IMPLEMENTATION_SUMMARY.md) - 技术实现细节
 
 ## 🧪 测试
 

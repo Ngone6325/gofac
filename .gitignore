@@ -1,4 +1,3 @@
-tests/
 .idea/
 .vscode/
 *.exe
@@ -13,14 +12,11 @@ tests/
 *.out
 *.err
 *.pid
-*.pid.lock
-*.pid.lock.old
-*.pid.lock.new
-*.pid.lock.tmp
-*.pid.lock.bak
-*.pid.lock.err
-*.pid.lock.out
-*.pid.lock.log
-*.pid.lock.tmp
-*.pid.lock.new
 logs/
+.claude/
+.cursor/
+.openai/
+.mcp/
+.trae/
+docs/
+tmp/

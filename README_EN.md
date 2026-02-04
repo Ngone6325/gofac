@@ -165,7 +165,7 @@ resolvedConfig := gofac.MustGet[*Config]()
 
 #### 4. Named Registration ⭐ New Feature
 
-支持同一类型的多个Instance Registration，适用于多数据库、多消息队列等场景。
+Support multiple instances of same type, suitable for multi-database, multi-message-queue scenarios.
 
 ```go
 type Database struct {
@@ -499,5 +499,5 @@ This project is inspired by [Autofac](https://autofac.org/).
 ---
 
 **Author**: Ngone6325
-**Version**: v1.1.0
+**Version**: v0.1.0
 **Updated**: 2026-02-02
